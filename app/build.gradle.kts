@@ -73,6 +73,9 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 
+    // DNS-over-HTTPS upstream forwarding
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
     // Navigation
     implementation("androidx.navigation:navigation-compose:2.7.6")
 
