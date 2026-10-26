@@ -11,7 +11,7 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.SocketException
-import java.net.SocketFactory
+import javax.net.SocketFactory
 import java.util.concurrent.TimeUnit
 
 /** DNS-over-HTTPS forwarder. HTTPS sockets are excluded from the VPN via protect(). */
@@ -27,12 +27,13 @@ class DnsOverHttpsForwarder(private val protectSocket: (Socket) -> Boolean) : Au
     @Volatile private var bootstrapAddresses: List<InetAddress> = emptyList()
 
     private val client = OkHttpClient.Builder()
-        .dns(Dns { host ->
-            if (host.equals(HOST, ignoreCase = true)) {
-                bootstrapAddresses.takeIf { it.isNotEmpty() }
-                    ?: throw IOException("DoH bootstrap unavailable")
-            } else {
-                throw IOException("Unexpected DNS lookup: $host")
+        .dns(object : Dns {
+            override fun lookup(hostname: String): List<InetAddress> {
+                if (hostname.equals(HOST, ignoreCase = true)) {
+                    return bootstrapAddresses.takeIf { it.isNotEmpty() }
+                        ?: throw IOException("DoH bootstrap unavailable")
+                }
+                throw IOException("Unexpected DNS lookup: $hostname")
             }
         })
         .socketFactory(ProtectingSocketFactory(protectSocket))
