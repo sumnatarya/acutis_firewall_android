@@ -84,12 +84,34 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Build debug APK
-        run: ./gradlew assembleDebug --no-daemon
+      - name: Build debug and minified release APKs
+        run: ./gradlew assembleDebug assembleRelease --no-daemon
 
-      - name: Upload APK
+      - name: Report APK sizes
+        shell: bash
+        run: |
+          echo "### APK size report" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Variant | Size |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---:|" >> "$GITHUB_STEP_SUMMARY"
+          for apk in app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/release/app-release-unsigned.apk app/build/outputs/apk/release/app-release.apk; do
+            if [ -f "$apk" ]; then
+              size=$(du -h "$apk" | cut -f1)
+              echo "| `$apk` | $size |" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+          find app/build/outputs/apk -name '*.apk' -type f -exec ls -lh {} \;
+
+      - name: Upload debug APK (diagnostic only)
         uses: actions/upload-artifact@v4
         with:
           name: debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 14
+
+      - name: Upload minified release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-apk
+          path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: warn
           retention-days: 14
