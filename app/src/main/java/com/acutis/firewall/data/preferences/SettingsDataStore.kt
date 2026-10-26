@@ -10,6 +10,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import com.acutis.firewall.security.PinPasswordPolicy
 import java.security.MessageDigest
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -190,6 +191,9 @@ class SettingsDataStore @Inject constructor(
     }
 
     fun setPin(pin: String) {
+        require(PinPasswordPolicy.isValid(pin)) {
+            "New parent passwords must be exactly 16 ASCII alphanumeric characters."
+        }
         val hash = hashPin(pin)
         encryptedPrefs.edit().putString(PIN_HASH_KEY, hash).apply()
     }
