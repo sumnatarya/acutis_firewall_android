@@ -86,7 +86,7 @@ jobs:
         run: chmod +x gradlew
 
       - name: Build debug and minified release APKs
-        run: ./gradlew assembleDebug assembleRelease --no-daemon
+        run: ./gradlew assembleDebug assembleRelease --no-daemon --stacktrace --console=plain
 
       - name: Report APK sizes
         shell: bash
