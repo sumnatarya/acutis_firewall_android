@@ -23,7 +23,6 @@ class DnsOverHttpsForwarder(private val protectSocket: (Socket) -> Boolean) : Au
     companion object {
         private const val TAG = "DnsOverHttps"
         private const val HOST = "sky.rethinkdns.com"
-        private const val NETWORK_CHANGE_ACTION = "android.net.conn.CONNECTIVITY_CHANGE"
         private const val ENDPOINT = "https://sky.rethinkdns.com/1:OPw_5Repnw_64h4AwIAGAOHRAJA="
         private val DNS_MEDIA_TYPE = "application/dns-message".toMediaType()
         private const val MAX_DNS_UDP_PAYLOAD = 1232
