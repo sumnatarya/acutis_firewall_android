@@ -36,9 +36,10 @@
             <intent-filter>
                 <action android:name="android.net.VpnService" />
             </intent-filter>
+            <!-- This VPN routes DNS only; it must not be used with Android's full-device lockdown. -->
             <meta-data
                 android:name="android.net.VpnService.SUPPORTS_ALWAYS_ON"
-                android:value="true" />
+                android:value="false" />
         </service>
 
         <receiver
