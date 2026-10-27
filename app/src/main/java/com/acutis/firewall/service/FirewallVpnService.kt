@@ -369,7 +369,7 @@ class FirewallVpnService : VpnService() {
 
     private fun createBlockedResponse(query: ByteArray): ByteArray {
         // Create NXDOMAIN response
-        val questionEnd = dnsForwarder.findQuestionEnd(query) ?: return createServFailResponse(query)!!
+        val questionEnd = dnsForwarder.findQuestionEnd(query) ?: return query.copyOf()
         val response = query.copyOfRange(0, questionEnd)
 
         // Set QR, preserve RD, set RA, return NXDOMAIN with no records.
