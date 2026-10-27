@@ -125,9 +125,9 @@ fun HomeScreen(
             title = { Text("VPN Lockdown Mode Detected") },
             text = {
                 Text(
-                    "\"Block connections without VPN\" is enabled in your device settings. " +
-                    "Acutis Firewall only filters DNS traffic, so other connections may be blocked.\n\n" +
-                    "Disable \"Block connections without VPN\" in VPN settings to fix this."
+                    "\"Block connections without VPN\" lockdown is enabled. Acutis Firewall filters DNS only and does not tunnel all internet traffic, " +
+                    "so Android may block ordinary web traffic.\n\n" +
+                    "Open VPN settings, turn off Always-on VPN and Block connections without VPN for Acutis Firewall, then reconnect."
                 )
             },
             confirmButton = {

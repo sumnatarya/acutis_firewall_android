@@ -5,7 +5,6 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
-import android.net.ConnectivityManager
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
@@ -15,15 +14,13 @@ import com.acutis.firewall.MainActivity
 import com.acutis.firewall.R
 import com.acutis.firewall.data.db.BlockedSiteDao
 import com.acutis.firewall.data.preferences.SettingsDataStore
+import com.acutis.firewall.dns.DnsOverHttpsForwarder
 import com.acutis.firewall.data.repository.TimeRuleRepository
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
 import java.io.FileInputStream
 import java.io.FileOutputStream
-import java.net.DatagramPacket
-import java.net.DatagramSocket
-import java.net.InetAddress
 import java.nio.ByteBuffer
 import javax.inject.Inject
 
@@ -41,8 +38,10 @@ class FirewallVpnService : VpnService() {
 
     private var vpnInterface: ParcelFileDescriptor? = null
     private var isRunning = false
+    private var isStarting = false
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var blockedDomains: Set<String> = emptySet()
+    private val dnsForwarder = DnsOverHttpsForwarder { socket -> protect(socket) }
 
     companion object {
         private const val TAG = "FirewallVPN"
@@ -63,21 +62,9 @@ class FirewallVpnService : VpnService() {
         private const val VPN_ADDRESS = "10.0.0.2"
         private const val MTU = 1500
         private const val DNS_PORT = 53
-
-        // Use Google DNS as our "fake" DNS that we intercept
-        private const val INTERCEPT_DNS = "8.8.8.8"
-        // Fallback DNS if system DNS is not available
-        private val FALLBACK_DNS = InetAddress.getByName("1.1.1.1")
-    }
-
-    // Upstream DNS server (system default or fallback)
-    private var upstreamDns: InetAddress = FALLBACK_DNS
-
-    private fun getSystemDnsServers(): List<InetAddress> {
-        val connectivityManager = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
-        val activeNetwork = connectivityManager.activeNetwork ?: return emptyList()
-        val linkProperties = connectivityManager.getLinkProperties(activeNetwork) ?: return emptyList()
-        return linkProperties.dnsServers
+        // Use a private virtual DNS address. Routing public resolver IPs here
+        // would also capture their HTTPS/DoT traffic, which this DNS-only VPN drops.
+        private const val INTERCEPT_DNS = "10.0.0.1"
     }
 
     override fun onCreate() {
@@ -134,14 +121,13 @@ class FirewallVpnService : VpnService() {
     }
 
     private fun startVpn() {
-        if (isRunning) return
+        if (isRunning || isStarting) return
+        isStarting = true
 
         serviceScope.launch {
             try {
-                // Get system DNS before starting VPN (VPN will change network properties)
-                val systemDns = getSystemDnsServers().firstOrNull()
-                upstreamDns = systemDns ?: FALLBACK_DNS
-                Log.d(TAG, "Using upstream DNS: $upstreamDns")
+                check(dnsForwarder.refreshBootstrap()) { "Unable to bootstrap DoH endpoint" }
+                Log.d(TAG, "Using DNS-over-HTTPS upstream endpoint")
 
                 blockedDomains = loadBlockedDomains()
                 Log.d(TAG, "Loaded ${blockedDomains.size} blocked domains")
@@ -152,11 +138,10 @@ class FirewallVpnService : VpnService() {
                     .setSession("Acutis Firewall")
                     .setMtu(MTU)
                     .addAddress(VPN_ADDRESS, 24)
-                    // Set DNS server that apps will use - we'll intercept queries to this
+                    // This is a virtual DNS server inside the VPN subnet, not a public IP.
+                    // Only packets addressed to this virtual IP enter the DNS packet handler.
                     .addDnsServer(INTERCEPT_DNS)
-                    // Route only DNS server IPs through VPN
                     .addRoute(INTERCEPT_DNS, 32)
-                    .addRoute("8.8.4.4", 32)
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     builder.setMetered(false)
@@ -176,10 +161,20 @@ class FirewallVpnService : VpnService() {
                     runVpnLoop()
                 } else {
                     Log.e(TAG, "Failed to establish VPN")
+                    settingsDataStore.setFirewallEnabled(false)
+                    stopSelf()
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error starting VPN", e)
+                isRunning = false
+                runCatching { vpnInterface?.close() }
+                vpnInterface = null
+                runCatching { settingsDataStore.setFirewallEnabled(false) }
+                    .onFailure { Log.e(TAG, "Could not clear firewall enabled state", it) }
+                stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
+            } finally {
+                isStarting = false
             }
         }
     }
@@ -382,28 +377,7 @@ class FirewallVpnService : VpnService() {
         return response
     }
 
-    private fun forwardToUpstream(query: ByteArray): ByteArray? {
-        var socket: DatagramSocket? = null
-        return try {
-            socket = DatagramSocket()
-            protect(socket) // CRITICAL: Prevent routing loop
-            socket.soTimeout = 5000
-
-            val packet = DatagramPacket(query, query.size, upstreamDns, DNS_PORT)
-            socket.send(packet)
-
-            val responseBuffer = ByteArray(1024)
-            val responsePacket = DatagramPacket(responseBuffer, responseBuffer.size)
-            socket.receive(responsePacket)
-
-            responseBuffer.copyOf(responsePacket.length)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error forwarding DNS", e)
-            null
-        } finally {
-            socket?.close()
-        }
-    }
+    private fun forwardToUpstream(query: ByteArray): ByteArray? = dnsForwarder.forward(query)
 
     private fun buildUdpResponsePacket(
         sourceIp: ByteArray,
@@ -483,6 +457,7 @@ class FirewallVpnService : VpnService() {
     }
 
     override fun onDestroy() {
+        dnsForwarder.close()
         super.onDestroy()
         isRunning = false
         serviceScope.cancel()
@@ -547,9 +522,9 @@ class FirewallVpnService : VpnService() {
 
             val notification = NotificationCompat.Builder(this, WARNING_CHANNEL_ID)
                 .setContentTitle("VPN Lockdown Mode Detected")
-                .setContentText("\"Block connections without VPN\" is enabled. This may cause internet issues.")
+                .setContentText("Turn off VPN lockdown to restore normal internet access.")
                 .setStyle(NotificationCompat.BigTextStyle()
-                    .bigText("\"Block connections without VPN\" is enabled in your device settings. Acutis Firewall only filters DNS traffic, so other connections may be blocked. Tap to open VPN settings and disable this option."))
+                    .bigText("Acutis Firewall filters DNS requests; it does not tunnel all internet traffic. Android's \"Block connections without VPN\" lockdown can therefore block ordinary web traffic. Open VPN settings and turn off Always-on VPN and Block connections without VPN for Acutis Firewall, then reconnect."))
                 .setSmallIcon(R.drawable.ic_shield)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .setContentIntent(pendingIntent)

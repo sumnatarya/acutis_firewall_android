@@ -40,6 +40,36 @@ class ManifestAttributesTest {
         assertThat(attr.nodeValue).isEqualTo("true")
     }
 
+    @Test
+    fun `DNS-only VPN does not advertise unsupported always-on lockdown`() {
+        val doc = DocumentBuilderFactory.newInstance()
+            .apply { isNamespaceAware = true }
+            .newDocumentBuilder()
+            .parse(manifest())
+
+        val services = doc.getElementsByTagName("service")
+        var alwaysOnValue: String? = null
+        for (i in 0 until services.length) {
+            val service = services.item(i)
+            val name = service.attributes.getNamedItemNS(androidNs, "name")?.nodeValue
+            if (name != ".service.FirewallVpnService") continue
+
+            val children = service.childNodes
+            for (j in 0 until children.length) {
+                val child = children.item(j)
+                if (child.nodeName == "meta-data" &&
+                    child.attributes.getNamedItemNS(androidNs, "name")?.nodeValue ==
+                    "android.net.VpnService.SUPPORTS_ALWAYS_ON"
+                ) {
+                    alwaysOnValue = child.attributes
+                        .getNamedItemNS(androidNs, "value")?.nodeValue
+                }
+            }
+        }
+
+        assertThat(alwaysOnValue).isEqualTo("false")
+    }
+
     /**
      * Uninstall protection is silently load-bearing on these three attributes: drop
      * the permission and any app can spoof the admin broadcasts; drop the meta-data
