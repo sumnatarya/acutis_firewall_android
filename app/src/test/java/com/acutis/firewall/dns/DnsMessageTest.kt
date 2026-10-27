@@ -4,6 +4,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Test
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 
 class DnsMessageTest {
     private val forwarder = DnsOverHttpsForwarder { true }
@@ -11,6 +13,7 @@ class DnsMessageTest {
     @Test
     fun validSingleQuestionHasCorrectEnd() {
         val query = query("www.google.com")
+        assertTrue(forwarder.isValidQuery(query))
         val end = forwarder.findQuestionEnd(query)
         assertNotNull(end)
         assertEquals(query.size, end)
@@ -27,10 +30,12 @@ class DnsMessageTest {
         assertEquals(0x82, response[3].toInt() and 0xFF)
         assertEquals(query.size, response.size)
         assertEquals(query.copyOfRange(12, query.size).toList(), response.copyOfRange(12, response.size).toList())
+        assertTrue(forwarder.isValidResponse(query, response))
     }
 
     @Test
     fun truncatedOrMalformedQuestionIsRejected() {
+        assertFalse(forwarder.isValidQuery(byteArrayOf(0, 1, 0)))
         assertNull(forwarder.findQuestionEnd(byteArrayOf(0, 1, 0)))
         val malformed = query("www.google.com").copyOf().apply { this[12] = 0x40 }
         assertNull(forwarder.findQuestionEnd(malformed))
