@@ -13,8 +13,8 @@ android {
         applicationId = "com.acutis.firewall"
         minSdk = 29
         targetSdk = 35
-        versionCode = 10006
-        versionName = "1.0.6"
+        versionCode = 10010
+        versionName = "1.0.10"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -24,13 +24,17 @@ android {
 
     buildTypes {
         release {
+            // Debug signing makes CI release APKs installable for testing.
+            // Use a protected production keystore before publishing publicly.
+            signingConfig = signingConfigs.getByName("debug")
             isMinifyEnabled = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // Keep full native debug symbols in a separate symbol table instead of the APK.
             ndk {
-                debugSymbolLevel = "FULL"
+                debugSymbolLevel = "SYMBOL_TABLE"
             }
         }
     }
@@ -72,6 +76,9 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
+
+    // DNS-over-HTTPS upstream forwarding
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     // Navigation
     implementation("androidx.navigation:navigation-compose:2.7.6")

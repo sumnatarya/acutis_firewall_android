@@ -11,6 +11,10 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.acutis.firewall.R
+import com.acutis.firewall.security.PinPasswordPolicy
+
+private fun isAsciiAlphaNumeric(value: String): Boolean =
+    value.all { it in 'A'..'Z' || it in 'a'..'z' || it in '0'..'9' }
 
 @Composable
 fun PinDialog(
@@ -18,32 +22,32 @@ fun PinDialog(
     onPinEntered: (String) -> Unit,
     isError: Boolean = false
 ) {
-    var pin by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = {
-            Text(text = stringResource(R.string.pin_required))
-        },
+        title = { Text(stringResource(R.string.pin_required)) },
         text = {
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = Modifier.fillMaxWidth()
             ) {
                 OutlinedTextField(
-                    value = pin,
-                    onValueChange = { if (it.length <= 6) pin = it },
-                    label = { Text(stringResource(R.string.enter_pin)) },
+                    value = password,
+                    onValueChange = {
+                        if (it.length <= 16 && isAsciiAlphaNumeric(it)) password = it
+                    },
+                    label = { Text(stringResource(R.string.enter_password)) },
                     visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
                     isError = isError,
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
                 if (isError) {
-                    Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(Modifier.height(8.dp))
                     Text(
-                        text = stringResource(R.string.incorrect_pin),
+                        stringResource(R.string.incorrect_pin),
                         color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.bodySmall
                     )
@@ -52,16 +56,12 @@ fun PinDialog(
         },
         confirmButton = {
             TextButton(
-                onClick = { onPinEntered(pin) },
-                enabled = pin.length >= 4
-            ) {
-                Text("OK")
-            }
+                onClick = { onPinEntered(password) },
+                enabled = password.length in 4..16
+            ) { Text("OK") }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text(stringResource(R.string.cancel))
-            }
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.cancel)) }
         }
     )
 }
@@ -71,54 +71,52 @@ fun PinSetupDialog(
     onDismiss: () -> Unit,
     onPinSet: (String) -> Unit
 ) {
-    var pin by remember { mutableStateOf("") }
-    var confirmPin by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var confirmPassword by remember { mutableStateOf("") }
     var showError by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = {
-            Text(text = stringResource(R.string.set_pin))
-        },
+        title = { Text(stringResource(R.string.set_password)) },
         text = {
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = Modifier.fillMaxWidth()
             ) {
                 OutlinedTextField(
-                    value = pin,
+                    value = password,
                     onValueChange = {
-                        if (it.length <= 6) {
-                            pin = it
+                        if (PinPasswordPolicy.isAllowedInput(it)) {
+                            password = it
                             showError = false
                         }
                     },
-                    label = { Text(stringResource(R.string.enter_pin)) },
+                    label = { Text(stringResource(R.string.enter_password)) },
                     visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(Modifier.height(16.dp))
                 OutlinedTextField(
-                    value = confirmPin,
+                    value = confirmPassword,
                     onValueChange = {
-                        if (it.length <= 6) {
-                            confirmPin = it
+                        if (PinPasswordPolicy.isAllowedInput(it)) {
+                            confirmPassword = it
                             showError = false
                         }
                     },
-                    label = { Text(stringResource(R.string.confirm_pin)) },
+                    label = { Text(stringResource(R.string.confirm_password)) },
                     visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
                     isError = showError,
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
                 if (showError) {
-                    Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(Modifier.height(8.dp))
                     Text(
-                        text = stringResource(R.string.pin_mismatch),
+                        stringResource(R.string.password_policy_error),
                         color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.bodySmall
                     )
@@ -128,21 +126,18 @@ fun PinSetupDialog(
         confirmButton = {
             TextButton(
                 onClick = {
-                    if (pin == confirmPin && pin.length >= 4) {
-                        onPinSet(pin)
+                    if (password == confirmPassword && PinPasswordPolicy.isValid(password)) {
+                        onPinSet(password)
                     } else {
                         showError = true
                     }
                 },
-                enabled = pin.length >= 4 && confirmPin.length >= 4
-            ) {
-                Text(stringResource(R.string.save))
-            }
+                enabled = PinPasswordPolicy.isValid(password) &&
+                    PinPasswordPolicy.isValid(confirmPassword)
+            ) { Text(stringResource(R.string.save)) }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text(stringResource(R.string.cancel))
-            }
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.cancel)) }
         }
     )
 }

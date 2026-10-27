@@ -148,11 +148,11 @@ class SettingsViewModelTest {
         advanceUntilIdle()
 
         // When
-        viewModel.onPinSetup("1234")
+        viewModel.onPinSetup("Abcd1234Efgh5678")
         advanceUntilIdle()
 
         // Then
-        verify { settingsDataStore.setPin("1234") }
+        verify { settingsDataStore.setPin("Abcd1234Efgh5678") }
         coVerify { settingsDataStore.setPinEnabled(true) }
         viewModel.uiState.test {
             val state = awaitItem()
