@@ -126,7 +126,6 @@ class DnsOverHttpsForwarder(private val protectSocket: (Socket) -> Boolean) : Au
     internal fun createServFailResponse(query: ByteArray): ByteArray? {
         val questionEnd = findQuestionEnd(query) ?: return null
         val result = query.copyOfRange(0, questionEnd)
-        val originalFlags = query[2].toInt() and 0xFF
         result[2] = ((originalFlags and 0x01) or 0x80 or 0x10).toByte() // QR, RD, RA
         result[3] = 0x02.toByte() // SERVFAIL; counts were cleared below
         result[6] = 0
