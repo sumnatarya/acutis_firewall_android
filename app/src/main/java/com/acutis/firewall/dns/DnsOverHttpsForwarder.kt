@@ -15,11 +15,10 @@ import javax.net.SocketFactory
 import java.util.concurrent.TimeUnit
 
 /**
- * DNS-over-HTTPS forwarder. The upstream HTTPS socket is protected from the VPN
- * so it uses the device's underlying network instead of recursively entering this
- * DNS-only tunnel.
+ * DNS-over-HTTPS forwarder. Its socket-preparation callback must route upstream
+ * HTTPS traffic over the physical network, outside this DNS-only VPN tunnel.
  */
-class DnsOverHttpsForwarder(private val protectSocket: (Socket) -> Boolean) : AutoCloseable {
+class DnsOverHttpsForwarder(private val prepareSocket: (Socket) -> Boolean) : AutoCloseable {
     companion object {
         private const val TAG = "DnsOverHttps"
         private const val HOST = "sky.rethinkdns.com"
@@ -40,7 +39,7 @@ class DnsOverHttpsForwarder(private val protectSocket: (Socket) -> Boolean) : Au
                     ?: throw IOException("DoH bootstrap unavailable; restart VPN on the current network")
             }
         })
-        .socketFactory(ProtectingSocketFactory(protectSocket))
+        .socketFactory(UpstreamSocketFactory(prepareSocket))
         .connectTimeout(5, TimeUnit.SECONDS)
         .readTimeout(5, TimeUnit.SECONDS)
         .writeTimeout(5, TimeUnit.SECONDS)
@@ -182,32 +181,32 @@ class DnsOverHttpsForwarder(private val protectSocket: (Socket) -> Boolean) : Au
         bootstrapAddresses = emptyList()
     }
 
-    private class ProtectingSocketFactory(
-        private val protectSocket: (Socket) -> Boolean
+    private class UpstreamSocketFactory(
+        private val prepareSocket: (Socket) -> Boolean
     ) : SocketFactory() {
-        private fun newProtectedSocket(): Socket = Socket().also { socket ->
-            if (!protectSocket(socket)) {
+        private fun newUpstreamSocket(): Socket = Socket().also { socket ->
+            if (!prepareSocket(socket)) {
                 socket.close()
-                throw SocketException("VpnService.protect(socket) failed")
+                throw SocketException("Could not route DoH socket outside the VPN")
             }
         }
 
-        override fun createSocket(): Socket = newProtectedSocket()
+        override fun createSocket(): Socket = newUpstreamSocket()
         override fun createSocket(host: String, port: Int): Socket =
-            newProtectedSocket().apply { connect(InetSocketAddress(host, port)) }
+            newUpstreamSocket().apply { connect(InetSocketAddress(host, port)) }
         override fun createSocket(host: String, port: Int, localHost: InetAddress, localPort: Int): Socket =
-            newProtectedSocket().apply {
+            newUpstreamSocket().apply {
                 bind(InetSocketAddress(localHost, localPort))
                 connect(InetSocketAddress(host, port))
             }
         override fun createSocket(host: InetAddress, port: Int): Socket =
-            newProtectedSocket().apply { connect(InetSocketAddress(host, port)) }
+            newUpstreamSocket().apply { connect(InetSocketAddress(host, port)) }
         override fun createSocket(
             address: InetAddress,
             port: Int,
             localAddress: InetAddress,
             localPort: Int
-        ): Socket = newProtectedSocket().apply {
+        ): Socket = newUpstreamSocket().apply {
             bind(InetSocketAddress(localAddress, localPort))
             connect(InetSocketAddress(address, port))
         }
