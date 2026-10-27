@@ -213,18 +213,16 @@ class FirewallVpnService : VpnService() {
     }
 
     private fun handlePacket(packetData: ByteArray, outputStream: FileOutputStream) {
-        // Need at least IP header
+        // Validate IP header before reading UDP fields; malformed/truncated packets are ignored.
         if (packetData.size < 20) return
-
-        val version = (packetData[0].toInt() and 0xF0) shr 4
+        val version = (packetData[0].toInt() and 0xF0) ushr 4
         if (version != 4) return // IPv4 only
-
         val headerLength = (packetData[0].toInt() and 0x0F) * 4
+        if (headerLength < 20 || headerLength > packetData.size || packetData.size < headerLength + 8) return
+        val totalLength = ((packetData[2].toInt() and 0xFF) shl 8) or (packetData[3].toInt() and 0xFF)
+        if (totalLength < headerLength + 8 || totalLength > packetData.size) return
         val protocol = packetData[9].toInt() and 0xFF
-
-        // We only handle UDP (protocol 17)
-        if (protocol != 17) return
-        if (packetData.size < headerLength + 8) return
+        if (protocol != 17) return // UDP only
 
         val sourcePort = ((packetData[headerLength].toInt() and 0xFF) shl 8) or
                         (packetData[headerLength + 1].toInt() and 0xFF)
@@ -237,20 +235,22 @@ class FirewallVpnService : VpnService() {
         val udpLength = ((packetData[headerLength + 4].toInt() and 0xFF) shl 8) or
                        (packetData[headerLength + 5].toInt() and 0xFF)
 
-        if (packetData.size < headerLength + udpLength) return
+        if (udpLength < 8 || headerLength + udpLength > totalLength) return
+        if (destIp(packetData) != INTERCEPT_DNS) return
+        if (udpLength - 8 < 12) return
 
         val dnsPayload = packetData.copyOfRange(headerLength + 8, headerLength + udpLength)
 
         // Extract source and dest IPs for response
         val sourceIp = packetData.copyOfRange(12, 16)
-        val destIp = packetData.copyOfRange(16, 20)
+        val destinationIp = packetData.copyOfRange(16, 20)
 
         // Handle DNS query async
         serviceScope.launch(Dispatchers.IO) {
             val dnsResponse = processDnsQuery(dnsPayload)
             if (dnsResponse != null) {
                 val responsePacket = buildUdpResponsePacket(
-                    sourceIp = destIp,
+                    sourceIp = destinationIp,
                     destIp = sourceIp,
                     sourcePort = DNS_PORT,
                     destPort = sourcePort,
@@ -283,7 +283,21 @@ class FirewallVpnService : VpnService() {
 
         // Forward to upstream DNS
         Log.d(TAG, "Forwarding: $domain")
-        return forwardToUpstream(dnsPayload)
+        return forwardToUpstream(dnsPayload) ?: createServFailResponse(dnsPayload)
+    }
+
+    private fun createServFailResponse(query: ByteArray): ByteArray? {
+        if (query.size < 12) return null
+        val questionEnd = dnsForwarder.findQuestionEnd(query) ?: return null
+        val response = query.copyOfRange(0, questionEnd)
+        response[2] = ((query[2].toInt() and 0x01) or 0x80 or 0x10).toByte() // QR, preserve RD, RA
+        response[3] = 0x02.toByte() // SERVFAIL, no answers/authority/additional records
+        for (i in 6..11) response[i] = 0
+        return response
+    }
+
+    private fun destIp(packet: ByteArray): String {
+        return (16..19).joinToString(".") { (packet[it].toInt() and 0xFF).toString() }
     }
 
     private fun extractDomainName(dnsPayload: ByteArray): String? {
