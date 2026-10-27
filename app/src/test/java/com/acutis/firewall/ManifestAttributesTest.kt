@@ -67,9 +67,7 @@ class ManifestAttributesTest {
             }
         }
 
-        assertThat(alwaysOnValue)
-            .named("FirewallVpnService SUPPORTS_ALWAYS_ON metadata")
-            .isEqualTo("false")
+        assertThat(alwaysOnValue).isEqualTo("false")
     }
 
     /**
