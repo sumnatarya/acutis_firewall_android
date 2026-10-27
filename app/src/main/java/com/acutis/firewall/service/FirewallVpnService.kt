@@ -6,6 +6,9 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
 import android.net.VpnService
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.util.Log
@@ -22,6 +25,7 @@ import kotlinx.coroutines.flow.first
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.nio.ByteBuffer
+import java.net.Socket
 import javax.inject.Inject
 
 @AndroidEntryPoint
@@ -41,7 +45,8 @@ class FirewallVpnService : VpnService() {
     private var isStarting = false
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var blockedDomains: Set<String> = emptySet()
-    private val dnsForwarder = DnsOverHttpsForwarder { socket -> protect(socket) }
+    @Volatile private var activeUnderlyingNetwork: Network? = null
+    private val dnsForwarder = DnsOverHttpsForwarder { socket -> prepareDoHSocket(socket) }
 
     companion object {
         private const val TAG = "FirewallVPN"
@@ -151,6 +156,15 @@ class FirewallVpnService : VpnService() {
 
                 if (vpnInterface != null) {
                     isRunning = true
+                    findUnderlyingNetwork()?.let { network ->
+                        val accepted = runCatching { setUnderlyingNetworks(arrayOf(network)) }
+                            .getOrElse { error ->
+                                Log.e(TAG, "Could not report DoH underlying network", error)
+                                false
+                            }
+                        if (accepted) activeUnderlyingNetwork = network
+                        Log.i(TAG, "VPN established; underlying network=$network, accepted=$accepted")
+                    } ?: Log.e(TAG, "VPN established but no non-VPN internet network was found")
                     startForeground(NOTIFICATION_ID, createNotification())
                     settingsDataStore.setFirewallEnabled(true)
                     Log.d(TAG, "VPN established successfully")
@@ -177,6 +191,74 @@ class FirewallVpnService : VpnService() {
                 isStarting = false
             }
         }
+    }
+
+    /**
+     * DoH is control traffic for this DNS-only VPN. Prefer explicitly binding its
+     * sockets to a validated physical network. This avoids a device-specific
+     * VpnService.protect(socket) failure that otherwise drops every DNS lookup.
+     */
+    private fun prepareDoHSocket(socket: Socket): Boolean {
+        val network = findUnderlyingNetwork()
+        if (network != null) {
+            try {
+                // The socket is unconnected here; Network.bindSocket must run before connect().
+                network.bindSocket(socket)
+                if (activeUnderlyingNetwork != network) {
+                    val accepted = runCatching { setUnderlyingNetworks(arrayOf(network)) }
+                        .getOrElse { error ->
+                            Log.w(TAG, "Could not update reported VPN underlying network", error)
+                            false
+                        }
+                    if (accepted) activeUnderlyingNetwork = network
+                }
+                Log.d(TAG, "DoH socket bound directly to underlying network $network")
+                return true
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not bind DoH socket to $network; falling back to protect()", e)
+            }
+        }
+
+        return try {
+            val protected = protect(socket)
+            if (protected) {
+                Log.i(TAG, "DoH socket successfully protected from VPN routing")
+            } else {
+                Log.e(TAG, "Both underlying-network binding and VpnService.protect(socket) failed")
+            }
+            protected
+        } catch (e: Exception) {
+            Log.e(TAG, "Unable to bypass VPN routing for DoH socket", e)
+            false
+        }
+    }
+
+    /**
+     * Returns a usable non-VPN network. Prefer validated Wi-Fi, then validated
+     * cellular, while keeping any internet-capable physical network as a fallback.
+     */
+    private fun findUnderlyingNetwork(): Network? {
+        val connectivityManager = getSystemService(ConnectivityManager::class.java)
+        val candidates = connectivityManager.allNetworks.mapNotNull { network ->
+            val capabilities = connectivityManager.getNetworkCapabilities(network)
+                ?: return@mapNotNull null
+            if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN) ||
+                !capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            ) {
+                null
+            } else {
+                network to capabilities
+            }
+        }
+        return candidates.sortedWith(
+            compareByDescending<Pair<Network, NetworkCapabilities>> {
+                it.second.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+            }.thenByDescending {
+                it.second.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+            }.thenByDescending {
+                it.second.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
+            }
+        ).firstOrNull()?.first
     }
 
     private suspend fun loadBlockedDomains(): Set<String> {
