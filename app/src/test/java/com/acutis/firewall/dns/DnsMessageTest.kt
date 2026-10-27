@@ -27,7 +27,7 @@ class DnsMessageTest {
         assertEquals(query[0], response!![0])
         assertEquals(query[1], response[1])
         assertEquals(0x91, response[2].toInt() and 0xFF)
-        assertEquals(0x82, response[3].toInt() and 0xFF)
+        assertEquals(0x02, response[3].toInt() and 0xFF)
         assertEquals(query.size, response.size)
         assertEquals(query.copyOfRange(12, query.size).toList(), response.copyOfRange(12, response.size).toList())
         assertTrue(forwarder.isValidResponse(query, response))
