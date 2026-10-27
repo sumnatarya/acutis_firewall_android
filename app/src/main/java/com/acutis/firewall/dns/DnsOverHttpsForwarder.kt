@@ -113,14 +113,14 @@ class DnsOverHttpsForwarder(private val protectSocket: (Socket) -> Boolean) : Au
         }
     }
 
-    private fun isValidQuery(query: ByteArray): Boolean {
+    internal fun isValidQuery(query: ByteArray): Boolean {
         if (query.size < 12 || query.size > 65535) return false
         val flags = query[2].toInt() and 0xFF
         val questionCount = readU16(query, 4)
         return (flags and 0x80) == 0 && questionCount > 0 && findQuestionEnd(query) != null
     }
 
-    private fun isValidResponse(query: ByteArray, response: ByteArray): Boolean {
+    internal fun isValidResponse(query: ByteArray, response: ByteArray): Boolean {
         if (response.size < 12 || response[0] != query[0] || response[1] != query[1]) return false
         val flags = response[2].toInt() and 0xFF
         if ((flags and 0x80) == 0) return false // QR must indicate a response.
@@ -134,12 +134,12 @@ class DnsOverHttpsForwarder(private val protectSocket: (Socket) -> Boolean) : Au
         return true
     }
 
-    private fun createServFailResponse(query: ByteArray): ByteArray? {
+    internal fun createServFailResponse(query: ByteArray): ByteArray? {
         val questionEnd = findQuestionEnd(query) ?: return null
         val result = query.copyOfRange(0, questionEnd)
         val originalFlags = query[2].toInt() and 0xFF
-        result[2] = ((originalFlags and 0x01) or 0x80 or 0x02 or 0x80).toByte() // QR, RD, RA
-        result[3] = ((query[3].toInt() and 0xF0) or 0x02).toByte() // SERVFAIL
+        result[2] = ((originalFlags and 0x01) or 0x80 or 0x10).toByte() // QR, RD, RA
+        result[3] = 0x02.toByte() // SERVFAIL; counts were cleared below
         result[6] = 0
         result[7] = 0
         result[8] = 0
@@ -149,7 +149,7 @@ class DnsOverHttpsForwarder(private val protectSocket: (Socket) -> Boolean) : Au
         return result
     }
 
-    private fun createTruncatedResponse(query: ByteArray): ByteArray? {
+    internal fun createTruncatedResponse(query: ByteArray): ByteArray? {
         val questionEnd = findQuestionEnd(query) ?: return null
         val result = query.copyOfRange(0, questionEnd)
         result[2] = ((result[2].toInt() and 0x7F) or 0x80 or 0x02).toByte()
@@ -158,7 +158,7 @@ class DnsOverHttpsForwarder(private val protectSocket: (Socket) -> Boolean) : Au
         return result
     }
 
-    private fun findQuestionEnd(message: ByteArray): Int? {
+    internal fun findQuestionEnd(message: ByteArray): Int? {
         if (message.size < 12) return null
         val count = readU16(message, 4)
         if (count == 0 || count > 16) return null
