@@ -199,6 +199,20 @@ class FirewallVpnService : VpnService() {
      * VpnService.protect(socket) failure that otherwise drops every DNS lookup.
      */
     private fun prepareDoHSocket(socket: Socket): Boolean {
+        // Java sockets can defer native descriptor creation until an option is queried.
+        // Android's Network.bindSocket does this internally with getReuseAddress(); do
+        // the same before VpnService.protect(), which otherwise may return false.
+        try {
+            socket.getReuseAddress()
+            if (protect(socket)) {
+                Log.d(TAG, "DoH socket protected from VPN routing")
+                return true
+            }
+            Log.w(TAG, "VpnService.protect(socket) returned false after socket initialization")
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not initialize/protect DoH socket; trying explicit network binding", e)
+        }
+
         val network = findUnderlyingNetwork()
         if (network != null) {
             try {
@@ -212,25 +226,15 @@ class FirewallVpnService : VpnService() {
                         }
                     if (accepted) activeUnderlyingNetwork = network
                 }
-                Log.d(TAG, "DoH socket bound directly to underlying network $network")
+                Log.i(TAG, "DoH socket bound directly to underlying network $network")
                 return true
             } catch (e: Exception) {
-                Log.w(TAG, "Could not bind DoH socket to $network; falling back to protect()", e)
+                Log.e(TAG, "Could not bind DoH socket to underlying network $network", e)
             }
         }
 
-        return try {
-            val protected = protect(socket)
-            if (protected) {
-                Log.i(TAG, "DoH socket successfully protected from VPN routing")
-            } else {
-                Log.e(TAG, "Both underlying-network binding and VpnService.protect(socket) failed")
-            }
-            protected
-        } catch (e: Exception) {
-            Log.e(TAG, "Unable to bypass VPN routing for DoH socket", e)
-            false
-        }
+        Log.e(TAG, "Unable to route DoH socket outside the VPN")
+        return false
     }
 
     /**
