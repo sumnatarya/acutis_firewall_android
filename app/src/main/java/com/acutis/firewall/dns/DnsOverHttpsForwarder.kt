@@ -73,7 +73,6 @@ class DnsOverHttpsForwarder(private val protectSocket: (Socket) -> Boolean) : Au
             Log.e(TAG, "No DoH bootstrap address available")
             return createServFailResponse(query)
         }
-
         return try {
             val request = Request.Builder()
                 .url(ENDPOINT)
@@ -85,27 +84,17 @@ class DnsOverHttpsForwarder(private val protectSocket: (Socket) -> Boolean) : Au
                     Log.e(TAG, "DoH HTTP status ${response.code}")
                     return createServFailResponse(query)
                 }
-
                 val type = response.header("Content-Type")?.substringBefore(';')?.trim()
                 if (!type.equals("application/dns-message", ignoreCase = true)) {
                     Log.e(TAG, "DoH returned unexpected content type: $type")
                     return createServFailResponse(query)
                 }
-
                 val body = response.body?.bytes()
                 if (body == null || !isValidResponse(query, body)) {
-                    Log.e(TAG, "DoH returned an invalid or mismatched DNS response")
+                    Log.e(TAG, "DoH returned invalid or mismatched DNS response")
                     return createServFailResponse(query)
                 }
-
-                if (body.size <= MAX_DNS_UDP_PAYLOAD) {
-                    body
-                } else {
-                    // Set TC and preserve the question section so Android can retry via TCP.
-                    // This app currently has no TCP DNS implementation, so keep replies small
-                    // and return a syntactically valid truncated UDP response.
-                    createTruncatedResponse(query)
-                }
+                if (body.size <= MAX_DNS_UDP_PAYLOAD) body else createTruncatedResponse(query)
             }
         } catch (e: Exception) {
             Log.e(TAG, "DoH request failed", e)
