@@ -24,6 +24,9 @@ android {
 
     buildTypes {
         release {
+            // Debug signing makes CI release APKs installable for testing.
+            // Use a protected production keystore before publishing publicly.
+            signingConfig = signingConfigs.getByName("debug")
             isMinifyEnabled = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
