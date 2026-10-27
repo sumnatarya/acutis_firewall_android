@@ -11,7 +11,7 @@ class DnsMessageTest {
     @Test
     fun validSingleQuestionHasCorrectEnd() {
         val query = query("www.google.com")
-        val end = forwarder.questionEndForTest(query)
+        val end = forwarder.findQuestionEnd(query)
         assertNotNull(end)
         assertEquals(query.size, end)
     }
@@ -19,7 +19,7 @@ class DnsMessageTest {
     @Test
     fun servFailPreservesIdAndQuestionAndSetsResponseFlags() {
         val query = query("www.google.com")
-        val response = forwarder.servFailForTest(query)
+        val response = forwarder.createServFailResponse(query)
         assertNotNull(response)
         assertEquals(query[0], response!![0])
         assertEquals(query[1], response[1])
@@ -31,9 +31,9 @@ class DnsMessageTest {
 
     @Test
     fun truncatedOrMalformedQuestionIsRejected() {
-        assertNull(forwarder.questionEndForTest(byteArrayOf(0, 1, 0)))
+        assertNull(forwarder.findQuestionEnd(byteArrayOf(0, 1, 0)))
         val malformed = query("www.google.com").copyOf().apply { this[12] = 0x40 }
-        assertNull(forwarder.questionEndForTest(malformed))
+        assertNull(forwarder.findQuestionEnd(malformed))
     }
 
     private fun query(name: String): ByteArray {
