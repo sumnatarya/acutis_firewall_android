@@ -429,20 +429,43 @@ class FirewallVpnService : VpnService() {
 
         val data = packet.array()
 
-        // Calculate IP checksum
-        var sum = 0
-        for (i in 0 until ipHeaderLen step 2) {
-            val word = ((data[i].toInt() and 0xFF) shl 8) or (data[i + 1].toInt() and 0xFF)
-            sum += word
-        }
-        while ((sum shr 16) != 0) {
-            sum = (sum and 0xFFFF) + (sum shr 16)
-        }
-        val checksum = sum.inv() and 0xFFFF
-        data[10] = (checksum shr 8).toByte()
-        data[11] = (checksum and 0xFF).toByte()
+        // Calculate the IPv4 header checksum.
+        data[10] = 0
+        data[11] = 0
+        data[10] = (internetChecksum(data, 0, ipHeaderLen) ushr 8).toByte()
+        data[11] = internetChecksum(data, 0, ipHeaderLen).toByte()
+
+        // Calculate a non-zero UDP checksum over IPv4 pseudo-header + UDP header + DNS.
+        // A zero UDP checksum is legal for IPv4, but a real checksum makes packet
+        // validation reliable on Android VPN/tun interfaces.
+        val pseudoHeader = ByteArray(12 + udpHeaderLen + payload.size)
+        System.arraycopy(data, 12, pseudoHeader, 0, 8) // source + destination IPv4 addresses
+        pseudoHeader[9] = 17
+        pseudoHeader[10] = ((udpHeaderLen + payload.size) ushr 8).toByte()
+        pseudoHeader[11] = (udpHeaderLen + payload.size).toByte()
+        System.arraycopy(data, ipHeaderLen, pseudoHeader, 12, udpHeaderLen + payload.size)
+        pseudoHeader[6] = 0
+        pseudoHeader[7] = 0
+        var udpChecksum = internetChecksum(pseudoHeader, 0, pseudoHeader.size)
+        if (udpChecksum == 0) udpChecksum = 0xFFFF
+        data[ipHeaderLen + 6] = (udpChecksum ushr 8).toByte()
+        data[ipHeaderLen + 7] = udpChecksum.toByte()
 
         return data
+    }
+
+    private fun internetChecksum(data: ByteArray, offset: Int, length: Int): Int {
+        var sum = 0L
+        var index = offset
+        val end = offset + length
+        while (index + 1 < end) {
+            sum += (((data[index].toInt() and 0xFF) shl 8) or
+                (data[index + 1].toInt() and 0xFF)).toLong()
+            index += 2
+        }
+        if (index < end) sum += ((data[index].toInt() and 0xFF) shl 8).toLong()
+        while ((sum ushr 16) != 0L) sum = (sum and 0xFFFF) + (sum ushr 16)
+        return sum.inv().toInt() and 0xFFFF
     }
 
     private suspend fun writePacket(outputStream: FileOutputStream, packet: ByteArray) {
