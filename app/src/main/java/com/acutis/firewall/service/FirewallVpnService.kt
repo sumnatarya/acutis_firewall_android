@@ -62,7 +62,9 @@ class FirewallVpnService : VpnService() {
         private const val VPN_ADDRESS = "10.0.0.2"
         private const val MTU = 1500
         private const val DNS_PORT = 53
-        private const val INTERCEPT_DNS = "8.8.8.8"
+        // Use a private virtual DNS address. Routing public resolver IPs here
+        // would also capture their HTTPS/DoT traffic, which this DNS-only VPN drops.
+        private const val INTERCEPT_DNS = "10.0.0.1"
     }
 
     override fun onCreate() {
@@ -136,11 +138,10 @@ class FirewallVpnService : VpnService() {
                     .setSession("Acutis Firewall")
                     .setMtu(MTU)
                     .addAddress(VPN_ADDRESS, 24)
-                    // Set DNS server that apps will use - we'll intercept queries to this
+                    // This is a virtual DNS server inside the VPN subnet, not a public IP.
+                    // Only packets addressed to this virtual IP enter the DNS packet handler.
                     .addDnsServer(INTERCEPT_DNS)
-                    // Route only DNS server IPs through VPN
                     .addRoute(INTERCEPT_DNS, 32)
-                    .addRoute("8.8.4.4", 32)
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     builder.setMetered(false)
