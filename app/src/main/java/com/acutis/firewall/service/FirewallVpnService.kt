@@ -38,6 +38,7 @@ class FirewallVpnService : VpnService() {
 
     private var vpnInterface: ParcelFileDescriptor? = null
     private var isRunning = false
+    private var isStarting = false
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var blockedDomains: Set<String> = emptySet()
     private val dnsForwarder = DnsOverHttpsForwarder { socket -> protect(socket) }
@@ -118,7 +119,8 @@ class FirewallVpnService : VpnService() {
     }
 
     private fun startVpn() {
-        if (isRunning) return
+        if (isRunning || isStarting) return
+        isStarting = true
 
         serviceScope.launch {
             try {
@@ -158,10 +160,20 @@ class FirewallVpnService : VpnService() {
                     runVpnLoop()
                 } else {
                     Log.e(TAG, "Failed to establish VPN")
+                    settingsDataStore.setFirewallEnabled(false)
+                    stopSelf()
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error starting VPN", e)
+                isRunning = false
+                runCatching { vpnInterface?.close() }
+                vpnInterface = null
+                runCatching { settingsDataStore.setFirewallEnabled(false) }
+                    .onFailure { Log.e(TAG, "Could not clear firewall enabled state", it) }
+                stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
+            } finally {
+                isStarting = false
             }
         }
     }
@@ -509,9 +521,9 @@ class FirewallVpnService : VpnService() {
 
             val notification = NotificationCompat.Builder(this, WARNING_CHANNEL_ID)
                 .setContentTitle("VPN Lockdown Mode Detected")
-                .setContentText("\"Block connections without VPN\" is enabled. This may cause internet issues.")
+                .setContentText("Turn off VPN lockdown to restore normal internet access.")
                 .setStyle(NotificationCompat.BigTextStyle()
-                    .bigText("\"Block connections without VPN\" is enabled in your device settings. Acutis Firewall only filters DNS traffic, so other connections may be blocked. Tap to open VPN settings and disable this option."))
+                    .bigText("Acutis Firewall filters DNS requests; it does not tunnel all internet traffic. Android's \"Block connections without VPN\" lockdown can therefore block ordinary web traffic. Open VPN settings and turn off Always-on VPN and Block connections without VPN for Acutis Firewall, then reconnect."))
                 .setSmallIcon(R.drawable.ic_shield)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .setContentIntent(pendingIntent)
