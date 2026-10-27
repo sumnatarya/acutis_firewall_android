@@ -213,7 +213,12 @@ class FirewallVpnService : VpnService() {
             Log.w(TAG, "Could not initialize/protect DoH socket; trying explicit network binding", e)
         }
 
-        val network = findUnderlyingNetwork()
+        val network = try {
+            findUnderlyingNetwork()
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not inspect available underlying networks", e)
+            null
+        }
         if (network != null) {
             try {
                 // The socket is unconnected here; Network.bindSocket must run before connect().
