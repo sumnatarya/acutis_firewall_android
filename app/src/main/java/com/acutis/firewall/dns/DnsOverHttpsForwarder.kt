@@ -25,9 +25,11 @@ class DnsOverHttpsForwarder(private val prepareSocket: (Socket) -> Boolean) : Au
         private const val ENDPOINT = "https://sky.rethinkdns.com/1:OPw_5Repnw_64h4AwIAGAOHRAJA="
         private val DNS_MEDIA_TYPE = "application/dns-message".toMediaType()
         private const val MAX_DNS_UDP_PAYLOAD = 1232
+        private const val BOOTSTRAP_REFRESH_MIN_INTERVAL_MS = 15_000L
     }
 
     @Volatile private var bootstrapAddresses: List<InetAddress> = emptyList()
+    @Volatile private var lastBootstrapAttemptMs: Long = 0L
 
     private val client = OkHttpClient.Builder()
         .dns(object : Dns {
@@ -52,15 +54,21 @@ class DnsOverHttpsForwarder(private val prepareSocket: (Socket) -> Boolean) : Au
      * because cached endpoint addresses may no longer be reachable on a new network.
      */
     @Synchronized
-    fun refreshBootstrap(): Boolean = try {
+    fun refreshBootstrap(force: Boolean = true): Boolean {
+        val now = System.nanoTime() / 1_000_000L
+        if (!force && bootstrapAddresses.isNotEmpty() && now - lastBootstrapAttemptMs < BOOTSTRAP_REFRESH_MIN_INTERVAL_MS) {
+            return true
+        }
+        lastBootstrapAttemptMs = now
+        return try {
         val resolved = InetAddress.getAllByName(HOST).toList()
         bootstrapAddresses = resolved
         Log.i(TAG, "DoH bootstrap resolved ${resolved.size} address(es)")
         resolved.isNotEmpty()
     } catch (e: Exception) {
         Log.e(TAG, "DoH bootstrap failed", e)
-        bootstrapAddresses = emptyList()
         false
+        }
     }
 
     fun forward(query: ByteArray): ByteArray? {
@@ -70,7 +78,7 @@ class DnsOverHttpsForwarder(private val prepareSocket: (Socket) -> Boolean) : Au
         }
         // DNS failures can be transient during captive portal checks or network changes.
         // Retry bootstrap for each request while the VPN itself remains active.
-        if (bootstrapAddresses.isEmpty() && !refreshBootstrap()) {
+        if (bootstrapAddresses.isEmpty() && !refreshBootstrap(force = false)) {
             Log.e(TAG, "No DoH bootstrap address available")
             return createServFailResponse(query)
         }
@@ -181,6 +189,7 @@ class DnsOverHttpsForwarder(private val prepareSocket: (Socket) -> Boolean) : Au
         client.dispatcher.cancelAll()
         client.connectionPool.evictAll()
         bootstrapAddresses = emptyList()
+        lastBootstrapAttemptMs = 0L
     }
 
     private class UpstreamSocketFactory(
