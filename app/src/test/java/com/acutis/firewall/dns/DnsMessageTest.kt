@@ -41,7 +41,7 @@ class DnsMessageTest {
     }
 
     @Test
-    fun blockedNxDomainHasValidResponseShapeAndPreservesQuestion() {
+    fun servFailResponseHasValidResponseShapeAndPreservesQuestion() {
         val query = query("blocked.example")
         val response = forwarder.createServFailResponse(query)!!
         assertEquals(query.copyOfRange(12, query.size).toList(), response.copyOfRange(12, response.size).toList())
