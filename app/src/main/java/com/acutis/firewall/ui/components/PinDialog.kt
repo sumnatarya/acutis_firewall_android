@@ -12,6 +12,12 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.acutis.firewall.R
 
+const val MIN_NEW_PIN_LENGTH = 16
+private val NEW_PIN_REGEX = Regex("[A-Za-z0-9]{$MIN_NEW_PIN_LENGTH,}")
+
+/** Rule for setting a PIN. Verification stays lenient so PINs set before this rule still unlock. */
+fun isValidNewPin(pin: String): Boolean = NEW_PIN_REGEX.matches(pin)
+
 @Composable
 fun PinDialog(
     onDismiss: () -> Unit,
@@ -32,10 +38,10 @@ fun PinDialog(
             ) {
                 OutlinedTextField(
                     value = pin,
-                    onValueChange = { if (it.length <= 6) pin = it },
+                    onValueChange = { pin = it },
                     label = { Text(stringResource(R.string.enter_pin)) },
                     visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                     isError = isError,
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
@@ -88,14 +94,13 @@ fun PinSetupDialog(
                 OutlinedTextField(
                     value = pin,
                     onValueChange = {
-                        if (it.length <= 6) {
-                            pin = it
-                            showError = false
-                        }
+                        pin = it
+                        showError = false
                     },
                     label = { Text(stringResource(R.string.enter_pin)) },
+                    supportingText = { Text(stringResource(R.string.pin_requirements)) },
                     visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -103,14 +108,12 @@ fun PinSetupDialog(
                 OutlinedTextField(
                     value = confirmPin,
                     onValueChange = {
-                        if (it.length <= 6) {
-                            confirmPin = it
-                            showError = false
-                        }
+                        confirmPin = it
+                        showError = false
                     },
                     label = { Text(stringResource(R.string.confirm_pin)) },
                     visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                     isError = showError,
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
@@ -128,13 +131,13 @@ fun PinSetupDialog(
         confirmButton = {
             TextButton(
                 onClick = {
-                    if (pin == confirmPin && pin.length >= 4) {
+                    if (pin == confirmPin && isValidNewPin(pin)) {
                         onPinSet(pin)
                     } else {
                         showError = true
                     }
                 },
-                enabled = pin.length >= 4 && confirmPin.length >= 4
+                enabled = isValidNewPin(pin) && confirmPin.isNotEmpty()
             ) {
                 Text(stringResource(R.string.save))
             }
