@@ -34,6 +34,22 @@ class DnsMessageTest {
     }
 
     @Test
+    fun servFailResponseAlwaysClearsAnswerAuthorityAndAdditionalCounts() {
+        val response = forwarder.createServFailResponse(query("example.org"))!!
+        for (index in 6..11) assertEquals(0, response[index].toInt())
+        assertTrue(forwarder.isValidResponse(query("example.org"), response))
+    }
+
+    @Test
+    fun blockedNxDomainHasValidResponseShapeAndPreservesQuestion() {
+        val query = query("blocked.example")
+        val response = forwarder.createServFailResponse(query)!!
+        assertEquals(query.copyOfRange(12, query.size).toList(), response.copyOfRange(12, response.size).toList())
+        assertTrue((response[2].toInt() and 0x80) != 0)
+        assertEquals(0x02, response[3].toInt() and 0xFF)
+    }
+
+    @Test
     fun truncatedOrMalformedQuestionIsRejected() {
         assertFalse(forwarder.isValidQuery(byteArrayOf(0, 1, 0)))
         assertNull(forwarder.findQuestionEnd(byteArrayOf(0, 1, 0)))
