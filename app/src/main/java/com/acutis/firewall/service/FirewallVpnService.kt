@@ -624,8 +624,12 @@ class FirewallVpnService : VpnService() {
     private suspend fun writePacket(outputStream: FileOutputStream, packet: ByteArray) {
         withContext(Dispatchers.IO) {
             try {
-                outputStream.write(packet)
-                outputStream.flush()
+                // Multiple DNS queries are handled concurrently; keep each IP packet atomic
+                // when writing back to the single TUN file descriptor.
+                synchronized(packetWriteLock) {
+                    outputStream.write(packet)
+                    outputStream.flush()
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Error writing packet", e)
             }
