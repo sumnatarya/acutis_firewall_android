@@ -5,7 +5,6 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
-import android.net.ConnectivityManager
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
@@ -21,9 +20,8 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
 import java.io.FileInputStream
 import java.io.FileOutputStream
-import java.net.DatagramPacket
-import java.net.DatagramSocket
-import java.net.InetAddress
+import java.net.HttpURLConnection
+import java.net.URL
 import java.nio.ByteBuffer
 import javax.inject.Inject
 
@@ -66,18 +64,7 @@ class FirewallVpnService : VpnService() {
 
         // Use Google DNS as our "fake" DNS that we intercept
         private const val INTERCEPT_DNS = "8.8.8.8"
-        // Fallback DNS if system DNS is not available
-        private val FALLBACK_DNS = InetAddress.getByName("1.1.1.1")
-    }
-
-    // Upstream DNS server (system default or fallback)
-    private var upstreamDns: InetAddress = FALLBACK_DNS
-
-    private fun getSystemDnsServers(): List<InetAddress> {
-        val connectivityManager = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
-        val activeNetwork = connectivityManager.activeNetwork ?: return emptyList()
-        val linkProperties = connectivityManager.getLinkProperties(activeNetwork) ?: return emptyList()
-        return linkProperties.dnsServers
+        private const val DOH_URL = "https://sky.rethinkdns.com/1:OPw_5Repnw_64h4AwIAGAOHRAJA="
     }
 
     override fun onCreate() {
@@ -138,11 +125,6 @@ class FirewallVpnService : VpnService() {
 
         serviceScope.launch {
             try {
-                // Get system DNS before starting VPN (VPN will change network properties)
-                val systemDns = getSystemDnsServers().firstOrNull()
-                upstreamDns = systemDns ?: FALLBACK_DNS
-                Log.d(TAG, "Using upstream DNS: $upstreamDns")
-
                 blockedDomains = loadBlockedDomains()
                 Log.d(TAG, "Loaded ${blockedDomains.size} blocked domains")
                 // Log first 10 domains for debugging
@@ -157,6 +139,8 @@ class FirewallVpnService : VpnService() {
                     // Route only DNS server IPs through VPN
                     .addRoute(INTERCEPT_DNS, 32)
                     .addRoute("8.8.4.4", 32)
+                    // Our own DoH requests (and their host lookup) must not re-enter the TUN.
+                    .addDisallowedApplication(packageName)
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     builder.setMetered(false)
@@ -382,26 +366,26 @@ class FirewallVpnService : VpnService() {
         return response
     }
 
+    // shortcut: fails closed (null -> client retries) and does not truncate replies over MTU; add TC handling if big answers break.
     private fun forwardToUpstream(query: ByteArray): ByteArray? {
-        var socket: DatagramSocket? = null
         return try {
-            socket = DatagramSocket()
-            protect(socket) // CRITICAL: Prevent routing loop
-            socket.soTimeout = 5000
-
-            val packet = DatagramPacket(query, query.size, upstreamDns, DNS_PORT)
-            socket.send(packet)
-
-            val responseBuffer = ByteArray(1024)
-            val responsePacket = DatagramPacket(responseBuffer, responseBuffer.size)
-            socket.receive(responsePacket)
-
-            responseBuffer.copyOf(responsePacket.length)
+            val conn = URL(DOH_URL).openConnection() as HttpURLConnection
+            conn.connectTimeout = 5000
+            conn.readTimeout = 5000
+            conn.requestMethod = "POST"
+            conn.doOutput = true
+            conn.setRequestProperty("Content-Type", "application/dns-message")
+            conn.setRequestProperty("Accept", "application/dns-message")
+            conn.outputStream.use { it.write(query) }
+            check(conn.responseCode == HttpURLConnection.HTTP_OK) { "DoH HTTP ${conn.responseCode}" }
+            conn.inputStream.use { it.readBytes() }.also {
+                // The stub resolver drops replies whose ID differs from its query.
+                it[0] = query[0]
+                it[1] = query[1]
+            }
         } catch (e: Exception) {
-            Log.e(TAG, "Error forwarding DNS", e)
+            Log.e(TAG, "Error forwarding DNS over HTTPS", e)
             null
-        } finally {
-            socket?.close()
         }
     }
 
