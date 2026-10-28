@@ -68,6 +68,8 @@ class DnsOverHttpsForwarder(private val prepareSocket: (Socket) -> Boolean) : Au
             Log.w(TAG, "Rejecting malformed DNS query")
             return null
         }
+        // DNS failures can be transient during captive portal checks or network changes.
+        // Retry bootstrap for each request while the VPN itself remains active.
         if (bootstrapAddresses.isEmpty() && !refreshBootstrap()) {
             Log.e(TAG, "No DoH bootstrap address available")
             return createServFailResponse(query)

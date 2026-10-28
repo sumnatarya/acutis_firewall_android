@@ -9,6 +9,10 @@ import android.net.VpnService
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
+import android.net.ConnectivityManager.NetworkCallback
+import android.net.NetworkRequest
+import android.os.Handler
+import android.os.Looper
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.util.Log
@@ -46,6 +50,8 @@ class FirewallVpnService : VpnService() {
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var blockedDomains: Set<String> = emptySet()
     @Volatile private var activeUnderlyingNetwork: Network? = null
+    private var networkCallback: NetworkCallback? = null
+    private val packetWriteLock = Any()
     private val dnsForwarder = DnsOverHttpsForwarder { socket -> prepareDoHSocket(socket) }
 
     companion object {
@@ -74,6 +80,7 @@ class FirewallVpnService : VpnService() {
 
     override fun onCreate() {
         super.onCreate()
+        registerPhysicalNetworkCallback()
         createNotificationChannel()
         createWarningNotificationChannel()
     }
@@ -131,8 +138,10 @@ class FirewallVpnService : VpnService() {
 
         serviceScope.launch {
             try {
-                check(dnsForwarder.refreshBootstrap()) { "Unable to bootstrap DoH endpoint" }
-                Log.d(TAG, "Using DNS-over-HTTPS upstream endpoint")
+                // Do not let a transient DNS/bootstrap failure leave a half-started VPN.
+                // The first DNS packet retries bootstrap after the VPN is established.
+                val bootstrapped = dnsForwarder.refreshBootstrap()
+                Log.i(TAG, "Initial DoH bootstrap result=$bootstrapped")
 
                 blockedDomains = loadBlockedDomains()
                 Log.d(TAG, "Loaded ${blockedDomains.size} blocked domains")
@@ -164,7 +173,7 @@ class FirewallVpnService : VpnService() {
                             }
                         if (accepted) activeUnderlyingNetwork = network
                         Log.i(TAG, "VPN established; underlying network=$network, accepted=$accepted")
-                    } ?: Log.e(TAG, "VPN established but no non-VPN internet network was found")
+                    } ?: Log.e(TAG, "VPN established but no non-VPN internet network was found; DNS forwarding will retry when a network appears")
                     startForeground(NOTIFICATION_ID, createNotification())
                     settingsDataStore.setFirewallEnabled(true)
                     Log.d(TAG, "VPN established successfully")
@@ -214,7 +223,7 @@ class FirewallVpnService : VpnService() {
         }
 
         val network = try {
-            findUnderlyingNetwork()
+            activeUnderlyingNetwork?.takeIf { isUsablePhysicalNetwork(it) } ?: findUnderlyingNetwork()
         } catch (e: Exception) {
             Log.w(TAG, "Could not inspect available underlying networks", e)
             null
@@ -246,6 +255,59 @@ class FirewallVpnService : VpnService() {
      * Returns a usable non-VPN network. Prefer validated Wi-Fi, then validated
      * cellular, while keeping any internet-capable physical network as a fallback.
      */
+    private fun isUsablePhysicalNetwork(network: Network): Boolean {
+        val cm = getSystemService(ConnectivityManager::class.java)
+        val caps = cm.getNetworkCapabilities(network) ?: return false
+        return !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) &&
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+    }
+
+    private fun registerPhysicalNetworkCallback() {
+        val cm = getSystemService(ConnectivityManager::class.java)
+        val request = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .build()
+        val callback = object : NetworkCallback() {
+            override fun onAvailable(network: Network) = refreshUnderlyingNetwork("available: $network")
+            override fun onLost(network: Network) {
+                if (activeUnderlyingNetwork == network) activeUnderlyingNetwork = null
+                refreshUnderlyingNetwork("lost: $network")
+            }
+            override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+                if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) {
+                    if (activeUnderlyingNetwork == network) activeUnderlyingNetwork = null
+                }
+                refreshUnderlyingNetwork("capabilities changed: $network")
+            }
+        }
+        try {
+            cm.registerNetworkCallback(request, callback, Handler(Looper.getMainLooper()))
+            networkCallback = callback
+            Log.i(TAG, "Registered physical-network callback")
+        } catch (e: Exception) {
+            Log.e(TAG, "Unable to register physical-network callback", e)
+        }
+    }
+
+    private fun refreshUnderlyingNetwork(reason: String) {
+        if (!isRunning) return
+        serviceScope.launch {
+            val network = runCatching { findUnderlyingNetwork() }.getOrNull()
+            if (network == activeUnderlyingNetwork) return@launch
+            activeUnderlyingNetwork = network
+            try {
+                setUnderlyingNetworks(network?.let { arrayOf(it) })
+                Log.i(TAG, "Updated underlying network ($reason): $network")
+            } catch (e: Exception) {
+                Log.e(TAG, "Could not update underlying network ($reason)", e)
+            }
+            // Cached bootstrap addresses may have belonged to the prior network.
+            val refreshed = dnsForwarder.refreshBootstrap()
+            Log.i(TAG, "Refreshed DoH bootstrap after network change: $refreshed")
+        }
+    }
+
     private fun findUnderlyingNetwork(): Network? {
         val connectivityManager = getSystemService(ConnectivityManager::class.java)
         val candidates = connectivityManager.allNetworks.mapNotNull { network ->
@@ -562,8 +624,12 @@ class FirewallVpnService : VpnService() {
     private suspend fun writePacket(outputStream: FileOutputStream, packet: ByteArray) {
         withContext(Dispatchers.IO) {
             try {
-                outputStream.write(packet)
-                outputStream.flush()
+                // Multiple DNS queries are handled concurrently; keep each IP packet atomic
+                // when writing back to the single TUN file descriptor.
+                synchronized(packetWriteLock) {
+                    outputStream.write(packet)
+                    outputStream.flush()
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Error writing packet", e)
             }
@@ -588,6 +654,11 @@ class FirewallVpnService : VpnService() {
         dnsForwarder.close()
         super.onDestroy()
         isRunning = false
+        networkCallback?.let { callback ->
+            runCatching { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(callback) }
+                .onFailure { Log.w(TAG, "Could not unregister physical-network callback", it) }
+        }
+        networkCallback = null
         serviceScope.cancel()
         vpnInterface?.close()
     }

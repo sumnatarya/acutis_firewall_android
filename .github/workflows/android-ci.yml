@@ -2,7 +2,7 @@ name: Android CI
 
 on:
   push:
-    branches: [ main, master, feature/16-char-password-doh ]
+    branches: [ main, master, feature/16-char-password-doh, fix/dns-connectivity-recovery ]
   pull_request:
     branches: [ main, master ]
   workflow_dispatch:
