@@ -41,7 +41,7 @@ A parental control Android app that blocks adult and dangerous content using a l
 - **Target selection** - Apply rules to domains, categories, or custom lists
 
 ### PIN Protection
-- Secure settings with a 4-digit PIN
+- Secure settings with a 16+ character alphanumeric PIN
 - PIN required to disable blocking or modify settings
 - Enabling protections does not require PIN (only disabling)
 - PIN also gates the notification's "Disable Firewall" action and time-rule changes
@@ -83,7 +83,7 @@ A parental control Android app that blocks adult and dangerous content using a l
 1. The app creates a local VPN tunnel using Android's `VpnService`
 2. All DNS queries are routed through the VPN
 3. Queries for blocked domains return NXDOMAIN (domain not found)
-4. Allowed queries are forwarded to upstream DNS (Cloudflare 1.1.1.1)
+4. Allowed queries are forwarded over HTTPS (DoH) to Rethink DNS (sky.rethinkdns.com)
 5. Time rules are evaluated in real-time for dynamic blocking
 
 ## Building
@@ -133,7 +133,7 @@ cd acutis_firewall_android
 ## Privacy
 
 - **No data collection** - All filtering happens locally on your device
-- **No external servers** - DNS queries go directly to Cloudflare (1.1.1.1)
+- **Encrypted DNS** - allowed queries go over HTTPS to Rethink DNS (sky.rethinkdns.com)
 - **No analytics** - The app does not track usage or behavior
 - **Encrypted PIN** - PIN is stored using Android's EncryptedSharedPreferences
 
