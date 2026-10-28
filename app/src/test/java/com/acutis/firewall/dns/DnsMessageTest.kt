@@ -50,6 +50,13 @@ class DnsMessageTest {
     }
 
     @Test
+    fun malformedAndEmptyDnsMessagesAreRejectedWithoutBootstrap() {
+        assertFalse(forwarder.isValidQuery(ByteArray(0)))
+        assertFalse(forwarder.isValidQuery(ByteArray(11)))
+        assertFalse(forwarder.isValidQuery(query("example.org").apply { this[4] = 0; this[5] = 0 }))
+    }
+
+    @Test
     fun truncatedOrMalformedQuestionIsRejected() {
         assertFalse(forwarder.isValidQuery(byteArrayOf(0, 1, 0)))
         assertNull(forwarder.findQuestionEnd(byteArrayOf(0, 1, 0)))
