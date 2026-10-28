@@ -5,6 +5,9 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
@@ -139,8 +142,9 @@ class FirewallVpnService : VpnService() {
                     // Route only DNS server IPs through VPN
                     .addRoute(INTERCEPT_DNS, 32)
                     .addRoute("8.8.4.4", 32)
-                    // Our own DoH requests (and their host lookup) must not re-enter the TUN.
-                    .addDisallowedApplication(packageName)
+                    // Lets forwardToUpstream() bind its DoH call to the physical network, so it
+                    // never re-enters the TUN. The app's other traffic (list downloads) stays filtered.
+                    .allowBypass()
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     builder.setMetered(false)
@@ -369,7 +373,7 @@ class FirewallVpnService : VpnService() {
     // shortcut: fails closed (null -> client retries) and does not truncate replies over MTU; add TC handling if big answers break.
     private fun forwardToUpstream(query: ByteArray): ByteArray? {
         return try {
-            val conn = URL(DOH_URL).openConnection() as HttpURLConnection
+            val conn = (physicalNetwork() ?: return null).openConnection(URL(DOH_URL)) as HttpURLConnection
             conn.connectTimeout = 5000
             conn.readTimeout = 5000
             conn.requestMethod = "POST"
@@ -386,6 +390,18 @@ class FirewallVpnService : VpnService() {
         } catch (e: Exception) {
             Log.e(TAG, "Error forwarding DNS over HTTPS", e)
             null
+        }
+    }
+
+    // First non-VPN network with working internet; its DNS resolves the DoH host without touching our TUN.
+    @Suppress("DEPRECATION")
+    private fun physicalNetwork(): Network? {
+        val cm = getSystemService(ConnectivityManager::class.java)
+        return cm.allNetworks.firstOrNull {
+            val caps = cm.getNetworkCapabilities(it) ?: return@firstOrNull false
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) &&
+                !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
         }
     }
 
