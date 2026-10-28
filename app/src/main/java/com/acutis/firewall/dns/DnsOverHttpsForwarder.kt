@@ -56,18 +56,19 @@ class DnsOverHttpsForwarder(private val prepareSocket: (Socket) -> Boolean) : Au
     @Synchronized
     fun refreshBootstrap(force: Boolean = true): Boolean {
         val now = System.nanoTime() / 1_000_000L
-        if (!force && bootstrapAddresses.isNotEmpty() && now - lastBootstrapAttemptMs < BOOTSTRAP_REFRESH_MIN_INTERVAL_MS) {
-            return true
+        if (!force && now - lastBootstrapAttemptMs < BOOTSTRAP_REFRESH_MIN_INTERVAL_MS) {
+            return bootstrapAddresses.isNotEmpty()
         }
         lastBootstrapAttemptMs = now
         return try {
-        val resolved = InetAddress.getAllByName(HOST).toList()
-        bootstrapAddresses = resolved
-        Log.i(TAG, "DoH bootstrap resolved ${resolved.size} address(es)")
-        resolved.isNotEmpty()
-    } catch (e: Exception) {
-        Log.e(TAG, "DoH bootstrap failed", e)
-        false
+            val resolved = InetAddress.getAllByName(HOST).toList()
+            bootstrapAddresses = resolved
+            Log.i(TAG, "DoH bootstrap resolved ${resolved.size} address(es)")
+            resolved.isNotEmpty()
+        } catch (e: Exception) {
+            Log.e(TAG, "DoH bootstrap failed", e)
+            bootstrapAddresses = emptyList()
+            false
         }
     }
 
