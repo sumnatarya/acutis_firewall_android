@@ -47,6 +47,7 @@ class FirewallVpnService : VpnService() {
     private var vpnInterface: ParcelFileDescriptor? = null
     private var isRunning = false
     private var isStarting = false
+    @Volatile private var lockdownModeWarningShown = false
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var blockedDomains: Set<String> = emptySet()
     @Volatile private var activeUnderlyingNetwork: Network? = null
@@ -178,7 +179,8 @@ class FirewallVpnService : VpnService() {
                     settingsDataStore.setFirewallEnabled(true)
                     Log.d(TAG, "VPN established successfully")
 
-                    // Check if lockdown mode is enabled and warn user
+                    // A DNS-only VPN cannot provide full-device lockdown. Detect both
+                    // lockdown and always-on use and show a clear warning.
                     checkLockdownMode()
 
                     runVpnLoop()
@@ -692,14 +694,18 @@ class FirewallVpnService : VpnService() {
             val lockdownEnabled = isLockdownEnabled
             val alwaysOn = isAlwaysOn
             Log.d(TAG, "VPN status - isAlwaysOn: $alwaysOn, isLockdownEnabled: $lockdownEnabled")
-            if (lockdownEnabled) {
-                Log.w(TAG, "VPN lockdown mode is enabled - internet may not work properly")
+            if (lockdownEnabled || alwaysOn) {
+                Log.w(TAG, "Always-on or lockdown is enabled for a DNS-only VPN; ordinary traffic may be blocked")
                 // Save to DataStore so UI can show a dialog
                 serviceScope.launch {
                     settingsDataStore.setLockdownModeDetected(true)
                 }
-                showLockdownWarning()
+                if (!lockdownModeWarningShown) {
+                    lockdownModeWarningShown = true
+                    showLockdownWarning()
+                }
             } else {
+                lockdownModeWarningShown = false
                 // Clear the lockdown flag if not in lockdown mode
                 serviceScope.launch {
                     settingsDataStore.setLockdownModeDetected(false)
