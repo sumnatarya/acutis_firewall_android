@@ -1,8 +1,11 @@
 package com.acutis.firewall.blocklist
 
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.dnsoverhttps.DnsOverHttps
 import java.io.IOException
-import java.net.HttpURLConnection
-import java.net.URL
+import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 
 interface HttpFetcher {
@@ -10,20 +13,28 @@ interface HttpFetcher {
     fun <T> fetchLines(urlString: String, block: (Sequence<String>) -> T): T
 }
 
+// Same endpoint as FirewallVpnService.DOH_URL; change both together.
+private const val DOH_URL = "https://sky.rethinkdns.com/1:OPw_5Repnw_64h4AwIAGAOHRAJA="
+
 class DefaultHttpFetcher @Inject constructor() : HttpFetcher {
+    // Resolve through Rethink DoH, not system DNS: system DNS is what times out on
+    // raw.githubusercontent.com, and this also works with the firewall off.
+    private val client: OkHttpClient by lazy {
+        val base = OkHttpClient.Builder()
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .build()
+        val doh = DnsOverHttps.Builder().client(base).url(DOH_URL.toHttpUrl()).build()
+        base.newBuilder().dns(doh).build()
+    }
+
     override fun <T> fetchLines(urlString: String, block: (Sequence<String>) -> T): T {
-        val connection = URL(urlString).openConnection() as HttpURLConnection
-        try {
-            connection.connectTimeout = 30_000
-            connection.readTimeout = 30_000
-            connection.requestMethod = "GET"
-            val code = connection.responseCode
-            if (code != HttpURLConnection.HTTP_OK) {
-                throw IOException("HTTP $code from $urlString")
+        client.newCall(Request.Builder().url(urlString).build()).execute().use { response ->
+            if (!response.isSuccessful) {
+                throw IOException("HTTP ${response.code} from $urlString")
             }
-            return connection.inputStream.bufferedReader().useLines(block)
-        } finally {
-            connection.disconnect()
+            val body = response.body ?: throw IOException("Empty body from $urlString")
+            return body.charStream().buffered().useLines(block)
         }
     }
 }
