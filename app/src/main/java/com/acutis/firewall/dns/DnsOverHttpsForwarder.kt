@@ -18,7 +18,13 @@ import java.util.concurrent.TimeUnit
  * DNS-over-HTTPS forwarder. Its socket-preparation callback must route upstream
  * HTTPS traffic over the physical network, outside this DNS-only VPN tunnel.
  */
-class DnsOverHttpsForwarder(private val prepareSocket: (Socket) -> Boolean) : AutoCloseable {
+class DnsOverHttpsForwarder(
+    private val prepareSocket: (Socket) -> Boolean,
+    private val resolveBootstrap: () -> List<InetAddress> = {
+        InetAddress.getAllByName("sky.rethinkdns.com").toList()
+    },
+    private val fallbackResolver: (ByteArray) -> ByteArray? = { null }
+) : AutoCloseable {
     companion object {
         private const val TAG = "DnsOverHttps"
         private const val HOST = "sky.rethinkdns.com"
@@ -61,7 +67,10 @@ class DnsOverHttpsForwarder(private val prepareSocket: (Socket) -> Boolean) : Au
         }
         lastBootstrapAttemptMs = now
         return try {
-            val resolved = InetAddress.getAllByName(HOST).toList()
+            // The service supplies a network-scoped resolver when the VPN is active.
+            // Using InetAddress.getAllByName here can send bootstrap DNS back into our
+            // own TUN interface and deadlock when the bootstrap cache is empty.
+            val resolved = resolveBootstrap()
             bootstrapAddresses = resolved
             Log.i(TAG, "DoH bootstrap resolved ${resolved.size} address(es)")
             resolved.isNotEmpty()
@@ -80,8 +89,8 @@ class DnsOverHttpsForwarder(private val prepareSocket: (Socket) -> Boolean) : Au
         // DNS failures can be transient during captive portal checks or network changes.
         // Retry bootstrap for each request while the VPN itself remains active.
         if (bootstrapAddresses.isEmpty() && !refreshBootstrap(force = false)) {
-            Log.e(TAG, "No DoH bootstrap address available")
-            return createServFailResponse(query)
+            Log.e(TAG, "No DoH bootstrap address available; trying physical-network DNS fallback")
+            return fallbackOrServFail(query)
         }
         return try {
             val request = Request.Builder()
@@ -91,25 +100,40 @@ class DnsOverHttpsForwarder(private val prepareSocket: (Socket) -> Boolean) : Au
                 .build()
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
-                    Log.e(TAG, "DoH HTTP status ${response.code}")
-                    return createServFailResponse(query)
+                    Log.e(TAG, "DoH HTTP status ${response.code}; trying physical-network DNS fallback")
+                    return fallbackOrServFail(query)
                 }
                 val type = response.header("Content-Type")?.substringBefore(';')?.trim()
                 if (!type.equals("application/dns-message", ignoreCase = true)) {
-                    Log.e(TAG, "DoH returned unexpected content type: $type")
-                    return createServFailResponse(query)
+                    Log.e(TAG, "DoH returned unexpected content type: $type; trying physical-network DNS fallback")
+                    return fallbackOrServFail(query)
                 }
                 val body = response.body?.bytes()
                 if (body == null || !isValidResponse(query, body)) {
-                    Log.e(TAG, "DoH returned invalid or mismatched DNS response")
-                    return createServFailResponse(query)
+                    Log.e(TAG, "DoH returned invalid or mismatched DNS response; trying physical-network DNS fallback")
+                    return fallbackOrServFail(query)
                 }
                 if (body.size <= MAX_DNS_UDP_PAYLOAD) body else createTruncatedResponse(query)
             }
         } catch (e: Exception) {
-            Log.e(TAG, "DoH request failed", e)
-            createServFailResponse(query)
+            Log.e(TAG, "DoH request failed; trying physical-network DNS fallback", e)
+            fallbackOrServFail(query)
         }
+    }
+
+    private fun fallbackOrServFail(query: ByteArray): ByteArray? {
+        val fallback = runCatching { fallbackResolver(query) }
+            .onFailure { Log.w(TAG, "Physical-network DNS fallback failed", it) }
+            .getOrNull()
+        return responseFromFallbackOrServFail(query, fallback)
+    }
+
+    internal fun responseFromFallbackOrServFail(
+        query: ByteArray,
+        fallbackResponse: ByteArray?
+    ): ByteArray? {
+        return fallbackResponse?.takeIf { isValidResponse(query, it) }
+            ?: createServFailResponse(query)
     }
 
     internal fun isValidQuery(query: ByteArray): Boolean {

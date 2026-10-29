@@ -13,8 +13,8 @@ android {
         applicationId = "com.acutis.firewall"
         minSdk = 29
         targetSdk = 35
-        versionCode = 10010
-        versionName = "1.0.10"
+        versionCode = 10011
+        versionName = "1.0.11"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -24,10 +24,15 @@ android {
 
     buildTypes {
         release {
-            // Debug signing makes CI release APKs installable for testing.
-            // Use a protected production keystore before publishing publicly.
+            // This branch produces a side-by-side diagnostic APK so it cannot
+            // overwrite a previously installed app signed by another CI debug key.
+            applicationIdSuffix = ".diagnostic"
+            versionNameSuffix = "-diagnostic"
+
+            // Debug signing is for diagnostics only; use a protected production
+            // keystore and stable application ID before publishing publicly.
             signingConfig = signingConfigs.getByName("debug")
-            isMinifyEnabled = true
+            isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
