@@ -291,7 +291,7 @@ class FirewallVpnService : VpnService() {
                     socket.soTimeout = 2500
                     network.bindSocket(socket)
                     socket.connect(java.net.InetSocketAddress(dnsServer, DNS_PORT))
-                    socket.send(java.net.DatagramPacket(query, query.size))
+                    socket.send(java.net.DatagramPacket(query, query.size, java.net.InetSocketAddress(dnsServer, DNS_PORT)))
 
                     val responseBuffer = ByteArray(4096)
                     val responsePacket = java.net.DatagramPacket(responseBuffer, responseBuffer.size)
