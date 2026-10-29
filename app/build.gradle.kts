@@ -32,7 +32,7 @@ android {
             // Debug signing is for diagnostics only; use a protected production
             // keystore and stable application ID before publishing publicly.
             signingConfig = signingConfigs.getByName("debug")
-            isMinifyEnabled = true
+            isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
