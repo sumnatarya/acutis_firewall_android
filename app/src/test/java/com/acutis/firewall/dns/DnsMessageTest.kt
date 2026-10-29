@@ -66,10 +66,10 @@ class DnsMessageTest {
 
     @Test
     fun invalidPhysicalDnsFallbackProducesServFailInsteadOfMismatchedResponse() {
-        val query = query("example.org")
+        val request = query("example.org")
         val otherQueryResponse = forwarder.createServFailResponse(query("different.org"))!!
-        val result = forwarder.responseFromFallbackOrServFail(query, otherQueryResponse)
-        assertTrue(forwarder.isValidResponse(query, result!!))
+        val result = forwarder.responseFromFallbackOrServFail(request, otherQueryResponse)
+        assertTrue(forwarder.isValidResponse(request, result!!))
         assertEquals(0x02, result[3].toInt() and 0xFF)
     }
 
