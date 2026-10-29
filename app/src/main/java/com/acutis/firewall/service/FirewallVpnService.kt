@@ -53,7 +53,11 @@ class FirewallVpnService : VpnService() {
     @Volatile private var activeUnderlyingNetwork: Network? = null
     private var networkCallback: NetworkCallback? = null
     private val packetWriteLock = Any()
-    private val dnsForwarder = DnsOverHttpsForwarder { socket -> prepareDoHSocket(socket) }
+    private val dnsForwarder = DnsOverHttpsForwarder(
+        prepareSocket = { socket -> prepareDoHSocket(socket) },
+        resolveBootstrap = { resolveDoHBootstrap() },
+        fallbackResolver = { query -> forwardDnsOnUnderlyingNetwork(query) }
+    )
 
     companion object {
         private const val TAG = "FirewallVPN"
@@ -251,6 +255,59 @@ class FirewallVpnService : VpnService() {
 
         Log.e(TAG, "Unable to route DoH socket outside the VPN")
         return false
+    }
+
+    /**
+     * Resolve the DoH hostname on the physical network explicitly. System DNS
+     * follows the VPN's virtual DNS server after establish(), which otherwise
+     * causes recursive bootstrap lookups when the bootstrap cache is empty.
+     */
+    private fun resolveDoHBootstrap(): List<java.net.InetAddress> {
+        val network = activeUnderlyingNetwork?.takeIf { isUsablePhysicalNetwork(it) }
+            ?: findUnderlyingNetwork()
+            ?: throw java.net.UnknownHostException("No non-VPN network is available for DoH bootstrap")
+        return network.getAllByName("sky.rethinkdns.com").toList()
+    }
+
+    /**
+     * Last-resort DNS path. Requests have already passed the local blocklist and
+     * time-rule checks; send them to the DNS server reported by the physical
+     * network, using a socket explicitly bound to that network.
+     */
+    private fun forwardDnsOnUnderlyingNetwork(query: ByteArray): ByteArray? {
+        val connectivityManager = getSystemService(ConnectivityManager::class.java)
+        val network = activeUnderlyingNetwork?.takeIf { isUsablePhysicalNetwork(it) }
+            ?: findUnderlyingNetwork()
+            ?: return null
+        val dnsServers = connectivityManager.getLinkProperties(network)?.dnsServers.orEmpty()
+        if (dnsServers.isEmpty()) {
+            Log.w(TAG, "Underlying network has no DNS servers for fallback")
+            return null
+        }
+
+        for (dnsServer in dnsServers) {
+            try {
+                java.net.DatagramSocket(null).use { socket ->
+                    socket.soTimeout = 2500
+                    network.bindSocket(socket)
+                    socket.connect(java.net.InetSocketAddress(dnsServer, DNS_PORT))
+                    socket.send(java.net.DatagramPacket(query, query.size))
+
+                    val responseBuffer = ByteArray(4096)
+                    val responsePacket = java.net.DatagramPacket(responseBuffer, responseBuffer.size)
+                    socket.receive(responsePacket)
+                    val response = responseBuffer.copyOf(responsePacket.length)
+                    if (dnsForwarder.isValidResponse(query, response)) {
+                        Log.w(TAG, "DNS query succeeded via physical-network fallback server $dnsServer")
+                        return response
+                    }
+                    Log.w(TAG, "Ignoring invalid fallback DNS response from $dnsServer")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Physical-network DNS fallback failed via $dnsServer", e)
+            }
+        }
+        return null
     }
 
     /**
