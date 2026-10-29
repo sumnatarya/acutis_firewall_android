@@ -8,7 +8,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 
 class DnsMessageTest {
-    private val forwarder = DnsOverHttpsForwarder { true }
+    private val forwarder = DnsOverHttpsForwarder({ true })
 
     @Test
     fun validSingleQuestionHasCorrectEnd() {
@@ -54,6 +54,23 @@ class DnsMessageTest {
         assertFalse(forwarder.isValidQuery(ByteArray(0)))
         assertFalse(forwarder.isValidQuery(ByteArray(11)))
         assertFalse(forwarder.isValidQuery(query("example.org").apply { this[4] = 0; this[5] = 0 }))
+    }
+
+    @Test
+    fun validPhysicalDnsFallbackIsUsedWhenDoHFails() {
+        val query = query("example.org")
+        val fallbackResponse = forwarder.createServFailResponse(query)!!
+        val result = forwarder.responseFromFallbackOrServFail(query, fallbackResponse)
+        assertEquals(fallbackResponse.toList(), result!!.toList())
+    }
+
+    @Test
+    fun invalidPhysicalDnsFallbackProducesServFailInsteadOfMismatchedResponse() {
+        val query = query("example.org")
+        val otherQueryResponse = forwarder.createServFailResponse(query("different.org"))!!
+        val result = forwarder.responseFromFallbackOrServFail(query, otherQueryResponse)
+        assertTrue(forwarder.isValidResponse(query, result!!))
+        assertEquals(0x02, result[3].toInt() and 0xFF)
     }
 
     @Test
