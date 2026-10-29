@@ -28,7 +28,6 @@ android {
             // overwrite a previously installed app signed by another CI debug key.
             applicationIdSuffix = ".diagnostic"
             versionNameSuffix = "-diagnostic"
-            resValue("string", "app_name", "Acutis Firewall Diagnostic")
 
             // Debug signing is for diagnostics only; use a protected production
             // keystore and stable application ID before publishing publicly.
