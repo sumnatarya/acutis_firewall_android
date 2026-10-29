@@ -24,8 +24,14 @@ android {
 
     buildTypes {
         release {
-            // Debug signing makes CI release APKs installable for testing.
-            // Use a protected production keystore before publishing publicly.
+            // This branch produces a side-by-side diagnostic APK so it cannot
+            // overwrite a previously installed app signed by another CI debug key.
+            applicationIdSuffix = ".diagnostic"
+            versionNameSuffix = "-diagnostic"
+            resValue("string", "app_name", "Acutis Firewall Diagnostic")
+
+            // Debug signing is for diagnostics only; use a protected production
+            // keystore and stable application ID before publishing publicly.
             signingConfig = signingConfigs.getByName("debug")
             isMinifyEnabled = true
             proguardFiles(
