@@ -93,7 +93,7 @@ A parental control Android app that blocks adult and dangerous content using a l
 - This is a **DNS-filtering VPN, not a full-device traffic tunnel**. It does not forward arbitrary TCP, UDP or IPv6 packets.
 - Apps that use their own direct DNS-over-HTTPS or DNS-over-TLS connection may bypass this DNS-port filter, depending on device configuration.
 - Android Always-on VPN and **Block connections without VPN** lockdown are not supported by this DNS-only design. Keep those settings disabled for Acutis Firewall to avoid blocking ordinary internet traffic.
-- IPv4 fragmentation is rejected rather than partially parsed. DNS responses too large for the VPN MTU are marked as truncated so the client can retry using its supported resolver behavior.
+- IPv4 fragmentation is rejected rather than partially parsed. DNS responses larger than the supported UDP payload are marked truncated. DNS-over-TCP packets are not yet proxied by the VPN, so some very large DNS answers may still fail; full TCP DNS support remains a follow-up requirement.
 
 ## Building
 
