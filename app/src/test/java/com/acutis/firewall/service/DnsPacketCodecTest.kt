@@ -152,8 +152,8 @@ class DnsPacketCodecTest {
         val actual = packet!!
         assertThat(actual.size).isEqualTo(20 + 8 + sampleDnsQuery().size)
         assertThat(actual[9].toInt() and 0xFF).isEqualTo(17)
-        assertThat(actual[12 until 16].toByteArray()).isEqualTo(dnsIp)
-        assertThat(actual[16 until 20].toByteArray()).isEqualTo(sourceIp)
+        assertThat(actual.copyOfRange(12, 16)).isEqualTo(dnsIp)
+        assertThat(actual.copyOfRange(16, 20)).isEqualTo(sourceIp)
         assertThat(internetChecksum(actual.copyOfRange(0, 20))).isEqualTo(0)
 
         val udpLength = ((actual[24].toInt() and 0xFF) shl 8) or
