@@ -46,7 +46,7 @@ class DnsMessageTest {
         val response = forwarder.createServFailResponse(query)!!
         assertEquals(query.copyOfRange(12, query.size).toList(), response.copyOfRange(12, response.size).toList())
         assertTrue((response[2].toInt() and 0x80) != 0)
-        assertEquals(0x02, response[3].toInt() and 0xFF)
+        assertEquals(0x82, response[3].toInt() and 0xFF)
     }
 
     @Test
