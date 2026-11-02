@@ -24,7 +24,7 @@ internal object HostsFileParser {
     private fun isAddressToken(token: String): Boolean {
         val parts = token.split('.')
         if (parts.size == 4 && parts.all { part ->
-                part.isNotEmpty() && part.all(Char::isDigit) && part.toIntOrNull() in 0..255
+                part.isNotEmpty() && part.all(Char::isDigit) && (part.toIntOrNull()?.let { it in 0..255 } == true)
             }
         ) return true
 
