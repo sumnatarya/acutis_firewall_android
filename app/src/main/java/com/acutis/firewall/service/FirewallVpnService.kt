@@ -19,12 +19,13 @@ import com.acutis.firewall.data.repository.TimeRuleRepository
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
-import java.nio.ByteBuffer
 import javax.inject.Inject
 
 @AndroidEntryPoint
@@ -41,6 +42,8 @@ class FirewallVpnService : VpnService() {
 
     private var vpnInterface: ParcelFileDescriptor? = null
     private var isRunning = false
+    private var isStarting = false
+    private val packetWriteMutex = Mutex()
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var blockedDomains: Set<String> = emptySet()
 
@@ -64,8 +67,10 @@ class FirewallVpnService : VpnService() {
         private const val MTU = 1500
         private const val DNS_PORT = 53
 
-        // Use Google DNS as our "fake" DNS that we intercept
-        private const val INTERCEPT_DNS = "8.8.8.8"
+        // A virtual DNS endpoint inside the VPN address range. Only DNS traffic
+        // addressed to this endpoint is routed into the TUN interface.
+        private const val INTERCEPT_DNS = "10.0.0.1"
+        private val INTERCEPT_DNS_BYTES = byteArrayOf(10, 0, 0, 1)
         // Fallback DNS if system DNS is not available
         private val FALLBACK_DNS = InetAddress.getByName("1.1.1.1")
     }
@@ -139,7 +144,9 @@ class FirewallVpnService : VpnService() {
         serviceScope.launch {
             try {
                 // Get system DNS before starting VPN (VPN will change network properties)
-                val systemDns = getSystemDnsServers().firstOrNull()
+                // The packet codec below constructs IPv4 responses, so select an
+                // IPv4 resolver. The protected socket bypasses this VPN interface.
+                val systemDns = getSystemDnsServers().firstOrNull { it.address.size == 4 }
                 upstreamDns = systemDns ?: FALLBACK_DNS
                 Log.d(TAG, "Using upstream DNS: $upstreamDns")
 
@@ -154,9 +161,9 @@ class FirewallVpnService : VpnService() {
                     .addAddress(VPN_ADDRESS, 24)
                     // Set DNS server that apps will use - we'll intercept queries to this
                     .addDnsServer(INTERCEPT_DNS)
-                    // Route only DNS server IPs through VPN
+                    // Route only the virtual DNS endpoint through the VPN.
+                    // All ordinary app traffic remains outside this split tunnel.
                     .addRoute(INTERCEPT_DNS, 32)
-                    .addRoute("8.8.4.4", 32)
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     builder.setMetered(false)
@@ -218,50 +225,27 @@ class FirewallVpnService : VpnService() {
     }
 
     private fun handlePacket(packetData: ByteArray, outputStream: FileOutputStream) {
-        // Need at least IP header
-        if (packetData.size < 20) return
+        // The VPN routes only the virtual DNS endpoint into this interface.
+        // Reject malformed, fragmented, non-UDP and non-DNS packets before parsing.
+        val query = DnsPacketCodec.parseIpv4UdpQuery(packetData) ?: return
+        if (!query.destinationAddress.contentEquals(INTERCEPT_DNS_BYTES)) return
 
-        val version = (packetData[0].toInt() and 0xF0) shr 4
-        if (version != 4) return // IPv4 only
-
-        val headerLength = (packetData[0].toInt() and 0x0F) * 4
-        val protocol = packetData[9].toInt() and 0xFF
-
-        // We only handle UDP (protocol 17)
-        if (protocol != 17) return
-        if (packetData.size < headerLength + 8) return
-
-        val sourcePort = ((packetData[headerLength].toInt() and 0xFF) shl 8) or
-                        (packetData[headerLength + 1].toInt() and 0xFF)
-        val destPort = ((packetData[headerLength + 2].toInt() and 0xFF) shl 8) or
-                      (packetData[headerLength + 3].toInt() and 0xFF)
-
-        // Only handle DNS (port 53)
-        if (destPort != DNS_PORT) return
-
-        val udpLength = ((packetData[headerLength + 4].toInt() and 0xFF) shl 8) or
-                       (packetData[headerLength + 5].toInt() and 0xFF)
-
-        if (packetData.size < headerLength + udpLength) return
-
-        val dnsPayload = packetData.copyOfRange(headerLength + 8, headerLength + udpLength)
-
-        // Extract source and dest IPs for response
-        val sourceIp = packetData.copyOfRange(12, 16)
-        val destIp = packetData.copyOfRange(16, 20)
-
-        // Handle DNS query async
-        serviceScope.launch(Dispatchers.IO) {
-            val dnsResponse = processDnsQuery(dnsPayload)
-            if (dnsResponse != null) {
-                val responsePacket = buildUdpResponsePacket(
-                    sourceIp = destIp,
-                    destIp = sourceIp,
+        serviceScope.launch {
+            try {
+                val dnsResponse = processDnsQuery(query.payload) ?: return@launch
+                val responsePacket = DnsPacketCodec.buildIpv4UdpPacket(
+                    sourceAddress = query.destinationAddress,
+                    destinationAddress = query.sourceAddress,
                     sourcePort = DNS_PORT,
-                    destPort = sourcePort,
+                    destinationPort = query.sourcePort,
                     payload = dnsResponse
-                )
+                ) ?: run {
+                    Log.w(TAG, "Unable to construct DNS response packet")
+                    return@launch
+                }
                 writePacket(outputStream, responsePacket)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error processing DNS packet", e)
             }
         }
     }
@@ -405,65 +389,18 @@ class FirewallVpnService : VpnService() {
         }
     }
 
-    private fun buildUdpResponsePacket(
-        sourceIp: ByteArray,
-        destIp: ByteArray,
-        sourcePort: Int,
-        destPort: Int,
-        payload: ByteArray
-    ): ByteArray {
-        val ipHeaderLen = 20
-        val udpHeaderLen = 8
-        val totalLen = ipHeaderLen + udpHeaderLen + payload.size
-
-        val packet = ByteBuffer.allocate(totalLen)
-
-        // IP Header
-        packet.put(0x45.toByte())           // Version 4, IHL 5
-        packet.put(0x00.toByte())           // DSCP/ECN
-        packet.putShort(totalLen.toShort()) // Total length
-        packet.putShort(0x0000.toShort())   // ID
-        packet.putShort(0x4000.toShort())   // Flags (DF)
-        packet.put(64.toByte())             // TTL
-        packet.put(17.toByte())             // Protocol (UDP)
-        packet.putShort(0)                  // Checksum placeholder
-        packet.put(sourceIp)                // Source IP
-        packet.put(destIp)                  // Dest IP
-
-        // UDP Header
-        packet.putShort(sourcePort.toShort())
-        packet.putShort(destPort.toShort())
-        packet.putShort((udpHeaderLen + payload.size).toShort())
-        packet.putShort(0) // UDP checksum optional
-
-        // Payload
-        packet.put(payload)
-
-        val data = packet.array()
-
-        // Calculate IP checksum
-        var sum = 0
-        for (i in 0 until ipHeaderLen step 2) {
-            val word = ((data[i].toInt() and 0xFF) shl 8) or (data[i + 1].toInt() and 0xFF)
-            sum += word
-        }
-        while ((sum shr 16) != 0) {
-            sum = (sum and 0xFFFF) + (sum shr 16)
-        }
-        val checksum = sum.inv() and 0xFFFF
-        data[10] = (checksum shr 8).toByte()
-        data[11] = (checksum and 0xFF).toByte()
-
-        return data
-    }
 
     private suspend fun writePacket(outputStream: FileOutputStream, packet: ByteArray) {
         withContext(Dispatchers.IO) {
-            try {
-                outputStream.write(packet)
-                outputStream.flush()
-            } catch (e: Exception) {
-                Log.e(TAG, "Error writing packet", e)
+            // Multiple DNS queries can complete concurrently. A TUN packet write must
+            // stay atomic so two responses cannot interleave on the shared descriptor.
+            packetWriteMutex.withLock {
+                try {
+                    outputStream.write(packet)
+                    outputStream.flush()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error writing packet", e)
+                }
             }
         }
     }
