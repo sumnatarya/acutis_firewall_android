@@ -127,7 +127,7 @@ class DnsPacketCodecTest {
     fun `rejects truncated UDP datagrams`() {
         val packet = ipv4UdpPacket()
         packet[24] = 0x7F
-        packet[25] = 0xFF
+        packet[25] = 0xFF.toByte()
         assertThat(DnsPacketCodec.parseIpv4UdpQuery(packet)).isNull()
     }
 
