@@ -26,8 +26,8 @@ class DnsMessageTest {
         assertNotNull(response)
         assertEquals(query[0], response!![0])
         assertEquals(query[1], response[1])
-        assertEquals(0x91, response[2].toInt() and 0xFF)
-        assertEquals(0x02, response[3].toInt() and 0xFF)
+        assertEquals(0x81, response[2].toInt() and 0xFF)
+        assertEquals(0x82, response[3].toInt() and 0xFF)
         assertEquals(query.size, response.size)
         assertEquals(query.copyOfRange(12, query.size).toList(), response.copyOfRange(12, response.size).toList())
         assertTrue(forwarder.isValidResponse(query, response))
@@ -47,6 +47,33 @@ class DnsMessageTest {
         assertEquals(query.copyOfRange(12, query.size).toList(), response.copyOfRange(12, response.size).toList())
         assertTrue((response[2].toInt() and 0x80) != 0)
         assertEquals(0x02, response[3].toInt() and 0xFF)
+    }
+
+    @Test
+    fun blockedResponseSetsNxdomainAndRecursionAvailableFlags() {
+        val query = query("blocked.example")
+        val response = forwarder.createBlockedResponse(query)
+
+        assertNotNull(response)
+        val result = response!!
+        assertEquals(0x81, result[2].toInt() and 0xFF) // QR + RD
+        assertEquals(0x83, result[3].toInt() and 0xFF) // RA + NXDOMAIN
+        assertEquals(query.copyOfRange(12, query.size).toList(), result.copyOfRange(12, result.size).toList())
+        for (index in 6..11) assertEquals(0, result[index].toInt())
+        assertTrue(forwarder.isValidResponse(query, result))
+    }
+
+    @Test
+    fun errorResponsesPreserveOpcodeRecursionDesiredAndCheckingDisabled() {
+        val query = query("opcode.example").apply {
+            this[2] = 0x19 // opcode 3 + RD
+            this[3] = 0x10 // Checking Disabled
+        }
+
+        val response = forwarder.createServFailResponse(query)
+        assertNotNull(response)
+        assertEquals(0x99, response!![2].toInt() and 0xFF) // QR + opcode + RD
+        assertEquals(0x92, response[3].toInt() and 0xFF) // RA + CD + SERVFAIL
     }
 
     @Test
@@ -70,7 +97,7 @@ class DnsMessageTest {
         val otherQueryResponse = forwarder.createServFailResponse(query("different.org"))!!
         val result = forwarder.responseFromFallbackOrServFail(request, otherQueryResponse)
         assertTrue(forwarder.isValidResponse(request, result!!))
-        assertEquals(0x02, result[3].toInt() and 0xFF)
+        assertEquals(0x82, result[3].toInt() and 0xFF)
     }
 
     @Test
