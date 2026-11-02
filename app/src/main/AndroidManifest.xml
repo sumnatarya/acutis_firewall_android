@@ -37,6 +37,9 @@
             <intent-filter>
                 <action android:name="android.net.VpnService" />
             </intent-filter>
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="User-initiated DNS filtering VPN that applies local policy and maintains the VPN connection." />
             <!-- This VPN routes DNS only; it must not be used with Android's full-device lockdown. -->
             <meta-data
                 android:name="android.net.VpnService.SUPPORTS_ALWAYS_ON"
