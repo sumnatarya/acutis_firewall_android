@@ -18,9 +18,10 @@ A parental control Android app that blocks adult and dangerous content using a l
 ## Features
 
 ### Content Blocking
-- **VPN-based DNS filtering** - Intercepts DNS queries locally to block dangerous domains
-- **No external server required** - All filtering happens on-device for privacy
-- **Works across all apps** - Not limited to browsers
+- **VPN-based DNS filtering** - Uses Android's local VPN interface to inspect supported DNS requests
+- **On-device policy checks** - Blocklists and time rules are evaluated locally
+- **App-wide DNS coverage** - Applies to apps that use Android's configured DNS resolver, not only browsers
+- **Encrypted upstream resolution** - Allowed lookups use DNS-over-HTTPS, with a physical-network DNS fallback when needed
 
 ### Pre-built Blocklists
 - **Adult content** - Blocks pornographic and explicit material
@@ -80,11 +81,19 @@ A parental control Android app that blocks adult and dangerous content using a l
 
 ### How It Works
 
-1. The app creates a local VPN tunnel using Android's `VpnService`
-2. All DNS queries are routed through the VPN
-3. Queries for blocked domains return NXDOMAIN (domain not found)
-4. Allowed queries are forwarded to upstream DNS (Cloudflare 1.1.1.1)
-5. Time rules are evaluated in real-time for dynamic blocking
+1. The app creates a local VPN interface using Android's `VpnService` and advertises a private virtual DNS endpoint.
+2. Only traffic addressed to that DNS endpoint is routed into the VPN. Ordinary web traffic is not sent through this DNS-only tunnel.
+3. The service validates supported IPv4/UDP DNS packets and checks the requested domain against local blocklists and time rules.
+4. Blocked requests receive a valid NXDOMAIN response. Allowed requests are sent to the configured DNS-over-HTTPS upstream (RethinkDNS).
+5. If DoH bootstrap or forwarding fails, the service tries a DNS resolver advertised by the underlying physical network and validates the returned response.
+6. The service tracks physical-network changes and refreshes its upstream routing/bootstrap state.
+
+### Routing and Compatibility Notes
+
+- This is a **DNS-filtering VPN, not a full-device traffic tunnel**. It does not forward arbitrary TCP, UDP or IPv6 packets.
+- Apps that use their own direct DNS-over-HTTPS or DNS-over-TLS connection may bypass this DNS-port filter, depending on device configuration.
+- Android Always-on VPN and **Block connections without VPN** lockdown are not supported by this DNS-only design. Keep those settings disabled for Acutis Firewall to avoid blocking ordinary internet traffic.
+- IPv4 fragmentation is rejected rather than partially parsed. DNS responses too large for the VPN MTU are marked as truncated so the client can retry using its supported resolver behavior.
 
 ## Building
 
@@ -132,10 +141,10 @@ cd acutis_firewall_android
 
 ## Privacy
 
-- **No data collection** - All filtering happens locally on your device
-- **No external servers** - DNS queries go directly to Cloudflare (1.1.1.1)
-- **No analytics** - The app does not track usage or behavior
-- **Encrypted PIN** - PIN is stored using Android's EncryptedSharedPreferences
+- **Local policy evaluation** - Blocklists and time-rule decisions are made on-device.
+- **DNS resolution uses network services** - Allowed domain lookups are sent to the configured RethinkDNS DoH endpoint; if that path fails, the app may use a DNS server supplied by the current physical network. Those DNS services necessarily receive the lookup they resolve.
+- **No app analytics** - The app does not include analytics tracking.
+- **Encrypted PIN storage** - PIN data is stored using Android's encrypted preferences/storage implementation.
 
 ## License
 
