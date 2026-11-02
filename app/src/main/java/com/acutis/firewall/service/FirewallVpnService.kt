@@ -507,50 +507,6 @@ class FirewallVpnService : VpnService() {
         return forwardToUpstream(dnsPayload) ?: dnsForwarder.createServFailResponse(dnsPayload)
     }
 
-    private fun extractDomainName(dnsPayload: ByteArray): String? {
-        try {
-            val parts = mutableListOf<String>()
-            var pos = 12 // Skip DNS header
-
-            while (pos < dnsPayload.size) {
-                val len = dnsPayload[pos].toInt() and 0xFF
-                if (len == 0) break
-
-                if ((len and 0xC0) == 0xC0) {
-                    // Compression pointer - follow it
-                    if (pos + 1 >= dnsPayload.size) break
-                    val offset = ((len and 0x3F) shl 8) or (dnsPayload[pos + 1].toInt() and 0xFF)
-                    return extractDomainFromOffset(dnsPayload, offset, parts)
-                }
-
-                pos++
-                if (pos + len > dnsPayload.size) break
-                parts.add(String(dnsPayload, pos, len, Charsets.US_ASCII))
-                pos += len
-            }
-
-            return if (parts.isNotEmpty()) parts.joinToString(".").lowercase() else null
-        } catch (e: Exception) {
-            Log.e(TAG, "Error parsing domain", e)
-            return null
-        }
-    }
-
-    private fun extractDomainFromOffset(data: ByteArray, startOffset: Int, existingParts: MutableList<String>): String? {
-        var pos = startOffset
-        while (pos < data.size) {
-            val len = data[pos].toInt() and 0xFF
-            if (len == 0) break
-            if ((len and 0xC0) == 0xC0) break // Another pointer, stop
-
-            pos++
-            if (pos + len > data.size) break
-            existingParts.add(String(data, pos, len, Charsets.US_ASCII))
-            pos += len
-        }
-        return if (existingParts.isNotEmpty()) existingParts.joinToString(".").lowercase() else null
-    }
-
     private fun shouldBlockDomain(domain: String): Boolean =
         DomainMatcher.matches(domain, blockedDomains)
 
