@@ -400,7 +400,7 @@ class FirewallVpnService : VpnService() {
 
     private suspend fun loadBlockedDomains(): Set<String> {
         return blockedSiteDao.getEnabledSitesList()
-            .map { it.domain.lowercase().trimEnd('.') }
+            .mapNotNull { DomainMatcher.normalizePattern(it.domain) }
             .toSet()
     }
 
