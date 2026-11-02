@@ -41,8 +41,8 @@ class FirewallVpnService : VpnService() {
     lateinit var timeRuleRepository: TimeRuleRepository
 
     private var vpnInterface: ParcelFileDescriptor? = null
-    private var isRunning = false
-    private var isStarting = false
+    @Volatile private var isRunning = false
+    @Volatile private var isStarting = false
     private val packetWriteMutex = Mutex()
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var blockedDomains: Set<String> = emptySet()
@@ -75,8 +75,8 @@ class FirewallVpnService : VpnService() {
         private val FALLBACK_DNS = InetAddress.getByName("1.1.1.1")
     }
 
-    // Upstream DNS server (system default or fallback)
-    private var upstreamDns: InetAddress = FALLBACK_DNS
+    // Try the active network's IPv4 DNS resolvers first, then a public fallback.
+    private var upstreamDnsServers: List<InetAddress> = listOf(FALLBACK_DNS)
 
     private fun getSystemDnsServers(): List<InetAddress> {
         val connectivityManager = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -151,9 +151,9 @@ class FirewallVpnService : VpnService() {
 
                 // Capture the active network resolver before establishing this VPN.
                 // The packet codec constructs IPv4 responses, so select IPv4 DNS.
-                val systemDns = getSystemDnsServers().firstOrNull { it.address.size == 4 }
-                upstreamDns = systemDns ?: FALLBACK_DNS
-                Log.d(TAG, "Using upstream DNS: $upstreamDns")
+                val systemDnsServers = getSystemDnsServers().filter { it.address.size == 4 }
+                upstreamDnsServers = (systemDnsServers + FALLBACK_DNS).distinct()
+                Log.d(TAG, "Using upstream DNS servers: $upstreamDnsServers")
 
                 blockedDomains = loadBlockedDomains()
                 Log.d(TAG, "Loaded ${blockedDomains.size} blocked domains")
@@ -378,25 +378,51 @@ class FirewallVpnService : VpnService() {
     private fun forwardToUpstream(query: ByteArray): ByteArray? {
         var socket: DatagramSocket? = null
         return try {
-            socket = DatagramSocket()
-            protect(socket) // CRITICAL: Prevent routing loop
-            socket.soTimeout = 5000
+            var lastFailure: Exception? = null
 
-            val packet = DatagramPacket(query, query.size, upstreamDns, DNS_PORT)
-            socket.send(packet)
+            for (dnsServer in upstreamDnsServers) {
+                socket = DatagramSocket()
+                try {
+                    // A failed protect() would send this socket back through our own
+                    // VPN and can create a DNS forwarding loop. Do not continue then.
+                    check(protect(socket)) { "Unable to protect upstream DNS socket" }
+                    socket.soTimeout = 5000
+                    socket.connect(dnsServer, DNS_PORT)
+                    socket.send(DatagramPacket(query, query.size))
 
-            // Read enough to detect oversized replies. The TUN MTU is 1500,
-            // so an IPv4/UDP DNS payload must fit within 1472 bytes.
-            val responseBuffer = ByteArray(4096)
-            val responseDatagram = DatagramPacket(responseBuffer, responseBuffer.size)
-            socket.receive(responseDatagram)
+                    // Read enough to detect oversized replies. The TUN MTU is 1500,
+                    // so an IPv4/UDP DNS payload must fit within 1472 bytes.
+                    val responseBuffer = ByteArray(4096)
+                    val responseDatagram = DatagramPacket(responseBuffer, responseBuffer.size)
+                    socket.receive(responseDatagram)
 
-            if (responseDatagram.length > MTU - 28 || responseDatagram.length == responseBuffer.size) {
-                Log.w(TAG, "Upstream DNS response is too large for one TUN packet; returning TC response")
-                return DnsPacketCodec.createTruncatedDnsResponse(query)
+                    if (responseDatagram.length < 12 ||
+                        responseDatagram.data[0] != query[0] ||
+                        responseDatagram.data[1] != query[1] ||
+                        (responseDatagram.data[2].toInt() and 0x80) == 0
+                    ) {
+                        throw IllegalStateException("Received an invalid DNS response from $dnsServer")
+                    }
+
+                    if (responseDatagram.length > MTU - 28 || responseDatagram.length == responseBuffer.size) {
+                        Log.w(TAG, "Upstream DNS response is too large for one TUN packet; returning TC response")
+                        return DnsPacketCodec.createTruncatedDnsResponse(query)
+                    }
+
+                    return responseBuffer.copyOf(responseDatagram.length)
+                } catch (e: Exception) {
+                    lastFailure = e
+                    Log.w(TAG, "DNS resolver $dnsServer failed; trying the next resolver", e)
+                } finally {
+                    socket.close()
+                    socket = null
+                }
             }
 
-            responseBuffer.copyOf(responseDatagram.length)
+            if (lastFailure != null) {
+                Log.e(TAG, "All upstream DNS resolvers failed", lastFailure)
+            }
+            null
         } catch (e: Exception) {
             Log.e(TAG, "Error forwarding DNS", e)
             null
