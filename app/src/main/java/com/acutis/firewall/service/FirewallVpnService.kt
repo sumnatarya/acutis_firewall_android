@@ -564,11 +564,11 @@ class FirewallVpnService : VpnService() {
         return false
     }
 
-    private fun createBlockedResponse(query: ByteArray): ByteArray {
+    private fun createBlockedResponse(query: ByteArray): ByteArray? {
         // Use the same tested DNS response builder as the upstream SERVFAIL path.
+        // Never echo a malformed request back as though it were a DNS response.
         return dnsForwarder.createBlockedResponse(query)
             ?: dnsForwarder.createServFailResponse(query)
-            ?: query.copyOf()
     }
 
     private fun forwardToUpstream(query: ByteArray): ByteArray? = dnsForwarder.forward(query)
