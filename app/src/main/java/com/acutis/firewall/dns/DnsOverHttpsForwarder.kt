@@ -157,17 +157,27 @@ class DnsOverHttpsForwarder(
         return true
     }
 
-    internal fun createServFailResponse(query: ByteArray): ByteArray? {
+    internal fun createBlockedResponse(query: ByteArray): ByteArray? =
+        createErrorResponse(query, rcode = 3)
+
+    internal fun createServFailResponse(query: ByteArray): ByteArray? =
+        createErrorResponse(query, rcode = 2)
+
+    /**
+     * Builds a DNS error response with the correct wire-format flag locations.
+     * QR, opcode and RD live in the first flags byte; RA and RCODE live in the
+     * second. Preserve opcode/RD/CD, set RA, and clear all record counts.
+     */
+    private fun createErrorResponse(query: ByteArray, rcode: Int): ByteArray? {
         val questionEnd = findQuestionEnd(query) ?: return null
         val result = query.copyOfRange(0, questionEnd)
-        result[2] = (((query[2].toInt() and 0x01) or 0x80 or 0x10)).toByte() // QR, preserve RD, RA
-        result[3] = 0x02.toByte() // SERVFAIL; counts were cleared below
-        result[6] = 0
-        result[7] = 0
-        result[8] = 0
-        result[9] = 0
-        result[10] = 0
-        result[11] = 0
+
+        val requestFlags1 = query[2].toInt() and 0xFF
+        val requestFlags2 = query[3].toInt() and 0xFF
+        result[2] = (0x80 or (requestFlags1 and 0x79)).toByte() // QR, opcode, RD
+        result[3] = (0x80 or (requestFlags2 and 0x10) or (rcode and 0x0F)).toByte() // RA, CD, RCODE
+
+        for (index in 6..11) result[index] = 0
         return result
     }
 
