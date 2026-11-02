@@ -551,28 +551,8 @@ class FirewallVpnService : VpnService() {
         return if (existingParts.isNotEmpty()) existingParts.joinToString(".").lowercase() else null
     }
 
-    private fun shouldBlockDomain(domain: String): Boolean {
-        val normalized = domain.lowercase().trimEnd('.')
-
-        // Direct match
-        if (blockedDomains.contains(normalized)) {
-            return true
-        }
-
-        // Check parent domains and wildcards
-        val parts = normalized.split(".")
-        for (i in parts.indices) {
-            val parent = parts.subList(i, parts.size).joinToString(".")
-            if (blockedDomains.contains(parent)) {
-                return true
-            }
-            if (blockedDomains.contains("*.$parent")) {
-                return true
-            }
-        }
-
-        return false
-    }
+    private fun shouldBlockDomain(domain: String): Boolean =
+        DomainMatcher.matches(domain, blockedDomains)
 
     private fun createBlockedResponse(query: ByteArray): ByteArray? {
         // Use the same tested DNS response builder as the upstream SERVFAIL path.
