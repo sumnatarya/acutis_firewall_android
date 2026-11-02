@@ -28,7 +28,6 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
 import java.io.FileInputStream
 import java.io.FileOutputStream
-import java.nio.ByteBuffer
 import java.net.Socket
 import javax.inject.Inject
 
@@ -45,8 +44,8 @@ class FirewallVpnService : VpnService() {
     lateinit var timeRuleRepository: TimeRuleRepository
 
     private var vpnInterface: ParcelFileDescriptor? = null
-    private var isRunning = false
-    private var isStarting = false
+    @Volatile private var isRunning = false
+    @Volatile private var isStarting = false
     @Volatile private var lockdownModeWarningShown = false
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var blockedDomains: Set<String> = emptySet()
@@ -78,9 +77,11 @@ class FirewallVpnService : VpnService() {
         private const val VPN_ADDRESS = "10.0.0.2"
         private const val MTU = 1500
         private const val DNS_PORT = 53
+        private const val MAX_DNS_UDP_PAYLOAD = MTU - 28
         // Use a private virtual DNS address. Routing public resolver IPs here
         // would also capture their HTTPS/DoT traffic, which this DNS-only VPN drops.
         private const val INTERCEPT_DNS = "10.0.0.1"
+        private val INTERCEPT_DNS_BYTES = byteArrayOf(10, 0, 0, 1)
     }
 
     override fun onCreate() {
@@ -137,12 +138,17 @@ class FirewallVpnService : VpnService() {
         }
     }
 
+    @Synchronized
     private fun startVpn() {
         if (isRunning || isStarting) return
         isStarting = true
 
         serviceScope.launch {
             try {
+                // Enter foreground before DoH bootstrap or database access. Both may
+                // wait on a slow/captive network and must not delay the FGS notification.
+                startForeground(NOTIFICATION_ID, createNotification())
+
                 // Do not let a transient DNS/bootstrap failure leave a half-started VPN.
                 // The first DNS packet retries bootstrap after the VPN is established.
                 val bootstrapped = dnsForwarder.refreshBootstrap()
@@ -150,15 +156,12 @@ class FirewallVpnService : VpnService() {
 
                 blockedDomains = loadBlockedDomains()
                 Log.d(TAG, "Loaded ${blockedDomains.size} blocked domains")
-                // Log first 10 domains for debugging
                 blockedDomains.take(10).forEach { Log.d(TAG, "  Blocked: $it") }
 
                 val builder = Builder()
                     .setSession("Acutis Firewall")
                     .setMtu(MTU)
                     .addAddress(VPN_ADDRESS, 24)
-                    // This is a virtual DNS server inside the VPN subnet, not a public IP.
-                    // Only packets addressed to this virtual IP enter the DNS packet handler.
                     .addDnsServer(INTERCEPT_DNS)
                     .addRoute(INTERCEPT_DNS, 32)
 
@@ -179,18 +182,16 @@ class FirewallVpnService : VpnService() {
                         if (accepted) activeUnderlyingNetwork = network
                         Log.i(TAG, "VPN established; underlying network=$network, accepted=$accepted")
                     } ?: Log.e(TAG, "VPN established but no non-VPN internet network was found; DNS forwarding will retry when a network appears")
-                    startForeground(NOTIFICATION_ID, createNotification())
+
                     settingsDataStore.setFirewallEnabled(true)
                     Log.d(TAG, "VPN established successfully")
 
-                    // A DNS-only VPN cannot provide full-device lockdown. Detect both
-                    // lockdown and always-on use and show a clear warning.
                     checkLockdownMode()
-
                     runVpnLoop()
                 } else {
                     Log.e(TAG, "Failed to establish VPN")
                     settingsDataStore.setFirewallEnabled(false)
+                    stopForeground(STOP_FOREGROUND_REMOVE)
                     stopSelf()
                 }
             } catch (e: Exception) {
@@ -399,76 +400,74 @@ class FirewallVpnService : VpnService() {
 
     private fun runVpnLoop() {
         serviceScope.launch {
-            val fd = vpnInterface?.fileDescriptor ?: return@launch
-            val inputStream = FileInputStream(fd)
-            val outputStream = FileOutputStream(fd)
-            val buffer = ByteArray(MTU)
+            val fd = vpnInterface?.fileDescriptor
+            if (fd == null) {
+                if (isRunning) {
+                    Log.e(TAG, "VPN interface disappeared before packet loop started")
+                    stopVpn()
+                }
+                return@launch
+            }
 
-            Log.d(TAG, "Starting VPN packet loop")
+            try {
+                val inputStream = FileInputStream(fd)
+                val outputStream = FileOutputStream(fd)
+                val buffer = ByteArray(MTU)
 
-            while (isRunning && vpnInterface != null) {
-                try {
+                Log.d(TAG, "Starting VPN packet loop")
+
+                while (isRunning && vpnInterface != null) {
                     val length = inputStream.read(buffer)
+                    if (length < 0) {
+                        Log.e(TAG, "VPN packet interface reached EOF")
+                        break
+                    }
                     if (length > 0) {
-                        val packetData = buffer.copyOf(length)
-                        handlePacket(packetData, outputStream)
+                        handlePacket(buffer.copyOf(length), outputStream)
                     }
-                } catch (e: Exception) {
-                    if (isRunning) {
-                        Log.e(TAG, "Error in VPN loop", e)
-                    }
-                    break
+                }
+            } catch (e: Exception) {
+                if (isRunning) Log.e(TAG, "Error in VPN packet loop", e)
+            } finally {
+                Log.d(TAG, "VPN loop ended")
+                if (isRunning) {
+                    // A live flag with no packet reader would leave DNS black-holed.
+                    stopVpn()
                 }
             }
-            Log.d(TAG, "VPN loop ended")
         }
     }
 
     private fun handlePacket(packetData: ByteArray, outputStream: FileOutputStream) {
-        // Validate IP header before reading UDP fields; malformed/truncated packets are ignored.
-        if (packetData.size < 20) return
-        val version = (packetData[0].toInt() and 0xF0) ushr 4
-        if (version != 4) return // IPv4 only
-        val headerLength = (packetData[0].toInt() and 0x0F) * 4
-        if (headerLength < 20 || headerLength > packetData.size || packetData.size < headerLength + 8) return
-        val totalLength = ((packetData[2].toInt() and 0xFF) shl 8) or (packetData[3].toInt() and 0xFF)
-        if (totalLength < headerLength + 8 || totalLength > packetData.size) return
-        val protocol = packetData[9].toInt() and 0xFF
-        if (protocol != 17) return // UDP only
+        // The codec validates IPv4 lengths, UDP lengths, DNS query flags and fragmentation.
+        val query = DnsPacketCodec.parseIpv4UdpQuery(packetData) ?: return
+        if (!query.destinationAddress.contentEquals(INTERCEPT_DNS_BYTES)) return
 
-        val sourcePort = ((packetData[headerLength].toInt() and 0xFF) shl 8) or
-                        (packetData[headerLength + 1].toInt() and 0xFF)
-        val destPort = ((packetData[headerLength + 2].toInt() and 0xFF) shl 8) or
-                      (packetData[headerLength + 3].toInt() and 0xFF)
+        serviceScope.launch {
+            try {
+                val dnsResponse = processDnsQuery(query.payload) ?: return@launch
+                // The VPN MTU is 1500 bytes. Keep the complete IPv4 packet below that
+                // limit; signal TC rather than writing an oversized UDP datagram.
+                val responsePayload = if (dnsResponse.size > MAX_DNS_UDP_PAYLOAD) {
+                    DnsPacketCodec.createTruncatedDnsResponse(query.payload) ?: return@launch
+                } else {
+                    dnsResponse
+                }
 
-        // Only handle DNS (port 53)
-        if (destPort != DNS_PORT) return
-
-        val udpLength = ((packetData[headerLength + 4].toInt() and 0xFF) shl 8) or
-                       (packetData[headerLength + 5].toInt() and 0xFF)
-
-        if (udpLength < 8 || headerLength + udpLength > totalLength) return
-        if (destIp(packetData) != INTERCEPT_DNS) return
-        if (udpLength - 8 < 12) return
-
-        val dnsPayload = packetData.copyOfRange(headerLength + 8, headerLength + udpLength)
-
-        // Extract source and dest IPs for response
-        val sourceIp = packetData.copyOfRange(12, 16)
-        val destinationIp = packetData.copyOfRange(16, 20)
-
-        // Handle DNS query async
-        serviceScope.launch(Dispatchers.IO) {
-            val dnsResponse = processDnsQuery(dnsPayload)
-            if (dnsResponse != null) {
-                val responsePacket = buildUdpResponsePacket(
-                    sourceIp = destinationIp,
-                    destIp = sourceIp,
+                val responsePacket = DnsPacketCodec.buildIpv4UdpPacket(
+                    sourceAddress = query.destinationAddress,
+                    destinationAddress = query.sourceAddress,
                     sourcePort = DNS_PORT,
-                    destPort = sourcePort,
-                    payload = dnsResponse
-                )
+                    destinationPort = query.sourcePort,
+                    payload = responsePayload
+                ) ?: run {
+                    Log.w(TAG, "Unable to construct DNS response packet")
+                    return@launch
+                }
+
                 writePacket(outputStream, responsePacket)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error processing DNS packet", e)
             }
         }
     }
@@ -506,10 +505,6 @@ class FirewallVpnService : VpnService() {
         response[3] = 0x02.toByte() // SERVFAIL, no answers/authority/additional records
         for (i in 6..11) response[i] = 0
         return response
-    }
-
-    private fun destIp(packet: ByteArray): String {
-        return (16..19).joinToString(".") { (packet[it].toInt() and 0xFF).toString() }
     }
 
     private fun extractDomainName(dnsPayload: ByteArray): String? {
@@ -604,81 +599,6 @@ class FirewallVpnService : VpnService() {
     }
 
     private fun forwardToUpstream(query: ByteArray): ByteArray? = dnsForwarder.forward(query)
-
-    private fun buildUdpResponsePacket(
-        sourceIp: ByteArray,
-        destIp: ByteArray,
-        sourcePort: Int,
-        destPort: Int,
-        payload: ByteArray
-    ): ByteArray {
-        val ipHeaderLen = 20
-        val udpHeaderLen = 8
-        val totalLen = ipHeaderLen + udpHeaderLen + payload.size
-
-        val packet = ByteBuffer.allocate(totalLen)
-
-        // IP Header
-        packet.put(0x45.toByte())           // Version 4, IHL 5
-        packet.put(0x00.toByte())           // DSCP/ECN
-        packet.putShort(totalLen.toShort()) // Total length
-        packet.putShort(0x0000.toShort())   // ID
-        packet.putShort(0x4000.toShort())   // Flags (DF)
-        packet.put(64.toByte())             // TTL
-        packet.put(17.toByte())             // Protocol (UDP)
-        packet.putShort(0)                  // Checksum placeholder
-        packet.put(sourceIp)                // Source IP
-        packet.put(destIp)                  // Dest IP
-
-        // UDP Header
-        packet.putShort(sourcePort.toShort())
-        packet.putShort(destPort.toShort())
-        packet.putShort((udpHeaderLen + payload.size).toShort())
-        packet.putShort(0) // UDP checksum optional
-
-        // Payload
-        packet.put(payload)
-
-        val data = packet.array()
-
-        // Calculate the IPv4 header checksum.
-        data[10] = 0
-        data[11] = 0
-        data[10] = (internetChecksum(data, 0, ipHeaderLen) ushr 8).toByte()
-        data[11] = internetChecksum(data, 0, ipHeaderLen).toByte()
-
-        // Calculate a non-zero UDP checksum over IPv4 pseudo-header + UDP header + DNS.
-        // A zero UDP checksum is legal for IPv4, but a real checksum makes packet
-        // validation reliable on Android VPN/tun interfaces.
-        val pseudoHeader = ByteArray(12 + udpHeaderLen + payload.size)
-        System.arraycopy(data, 12, pseudoHeader, 0, 8) // source + destination IPv4 addresses
-        pseudoHeader[9] = 17
-        pseudoHeader[10] = ((udpHeaderLen + payload.size) ushr 8).toByte()
-        pseudoHeader[11] = (udpHeaderLen + payload.size).toByte()
-        System.arraycopy(data, ipHeaderLen, pseudoHeader, 12, udpHeaderLen + payload.size)
-        pseudoHeader[6] = 0
-        pseudoHeader[7] = 0
-        var udpChecksum = internetChecksum(pseudoHeader, 0, pseudoHeader.size)
-        if (udpChecksum == 0) udpChecksum = 0xFFFF
-        data[ipHeaderLen + 6] = (udpChecksum ushr 8).toByte()
-        data[ipHeaderLen + 7] = udpChecksum.toByte()
-
-        return data
-    }
-
-    private fun internetChecksum(data: ByteArray, offset: Int, length: Int): Int {
-        var sum = 0L
-        var index = offset
-        val end = offset + length
-        while (index + 1 < end) {
-            sum += (((data[index].toInt() and 0xFF) shl 8) or
-                (data[index + 1].toInt() and 0xFF)).toLong()
-            index += 2
-        }
-        if (index < end) sum += ((data[index].toInt() and 0xFF) shl 8).toLong()
-        while ((sum ushr 16) != 0L) sum = (sum and 0xFFFF) + (sum ushr 16)
-        return sum.inv().toInt() and 0xFFFF
-    }
 
     private suspend fun writePacket(outputStream: FileOutputStream, packet: ByteArray) {
         withContext(Dispatchers.IO) {
