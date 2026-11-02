@@ -138,31 +138,32 @@ class FirewallVpnService : VpnService() {
         }
     }
 
+    @Synchronized
     private fun startVpn() {
-        if (isRunning) return
+        if (isRunning || isStarting) return
+        isStarting = true
 
         serviceScope.launch {
             try {
-                // Get system DNS before starting VPN (VPN will change network properties)
-                // The packet codec below constructs IPv4 responses, so select an
-                // IPv4 resolver. The protected socket bypasses this VPN interface.
+                // Enter foreground immediately. Database or network lookups must not
+                // delay the foreground-service notification on Android 8+.
+                startForeground(NOTIFICATION_ID, createNotification())
+
+                // Capture the active network resolver before establishing this VPN.
+                // The packet codec constructs IPv4 responses, so select IPv4 DNS.
                 val systemDns = getSystemDnsServers().firstOrNull { it.address.size == 4 }
                 upstreamDns = systemDns ?: FALLBACK_DNS
                 Log.d(TAG, "Using upstream DNS: $upstreamDns")
 
                 blockedDomains = loadBlockedDomains()
                 Log.d(TAG, "Loaded ${blockedDomains.size} blocked domains")
-                // Log first 10 domains for debugging
                 blockedDomains.take(10).forEach { Log.d(TAG, "  Blocked: $it") }
 
                 val builder = Builder()
                     .setSession("Acutis Firewall")
                     .setMtu(MTU)
                     .addAddress(VPN_ADDRESS, 24)
-                    // Set DNS server that apps will use - we'll intercept queries to this
                     .addDnsServer(INTERCEPT_DNS)
-                    // Route only the virtual DNS endpoint through the VPN.
-                    // All ordinary app traffic remains outside this split tunnel.
                     .addRoute(INTERCEPT_DNS, 32)
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -173,20 +174,28 @@ class FirewallVpnService : VpnService() {
 
                 if (vpnInterface != null) {
                     isRunning = true
-                    startForeground(NOTIFICATION_ID, createNotification())
                     settingsDataStore.setFirewallEnabled(true)
                     Log.d(TAG, "VPN established successfully")
 
-                    // Check if lockdown mode is enabled and warn user
                     checkLockdownMode()
-
                     runVpnLoop()
                 } else {
                     Log.e(TAG, "Failed to establish VPN")
+                    settingsDataStore.setFirewallEnabled(false)
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error starting VPN", e)
+                isRunning = false
+                vpnInterface?.close()
+                vpnInterface = null
+                runCatching { settingsDataStore.setFirewallEnabled(false) }
+                    .onFailure { Log.e(TAG, "Could not reset firewall state", it) }
+                stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
+            } finally {
+                isStarting = false
             }
         }
     }
@@ -376,11 +385,18 @@ class FirewallVpnService : VpnService() {
             val packet = DatagramPacket(query, query.size, upstreamDns, DNS_PORT)
             socket.send(packet)
 
-            val responseBuffer = ByteArray(1024)
-            val responsePacket = DatagramPacket(responseBuffer, responseBuffer.size)
-            socket.receive(responsePacket)
+            // Read enough to detect oversized replies. The TUN MTU is 1500,
+            // so an IPv4/UDP DNS payload must fit within 1472 bytes.
+            val responseBuffer = ByteArray(4096)
+            val responseDatagram = DatagramPacket(responseBuffer, responseBuffer.size)
+            socket.receive(responseDatagram)
 
-            responseBuffer.copyOf(responsePacket.length)
+            if (responseDatagram.length > MTU - 28 || responseDatagram.length == responseBuffer.size) {
+                Log.w(TAG, "Upstream DNS response is too large for one TUN packet; returning TC response")
+                return DnsPacketCodec.createTruncatedDnsResponse(query)
+            }
+
+            responseBuffer.copyOf(responseDatagram.length)
         } catch (e: Exception) {
             Log.e(TAG, "Error forwarding DNS", e)
             null
