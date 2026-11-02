@@ -36,6 +36,13 @@ class DomainMatcherTest {
     }
 
     @Test
+    fun `service discovery labels still match a blocked parent domain`() {
+        assertThat(
+            DomainMatcher.matches("_service._tcp.example.com", setOf("example.com"))
+        ).isTrue()
+    }
+
+    @Test
     fun `invalid patterns are ignored`() {
         assertThat(DomainMatcher.normalizePattern("*.")).isNull()
         assertThat(DomainMatcher.normalizePattern("bad..example")).isNull()
