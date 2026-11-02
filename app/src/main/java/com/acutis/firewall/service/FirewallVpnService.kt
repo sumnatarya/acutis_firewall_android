@@ -494,17 +494,7 @@ class FirewallVpnService : VpnService() {
 
         // Forward to upstream DNS
         Log.d(TAG, "Forwarding: $domain")
-        return forwardToUpstream(dnsPayload) ?: createServFailResponse(dnsPayload)
-    }
-
-    private fun createServFailResponse(query: ByteArray): ByteArray? {
-        if (query.size < 12) return null
-        val questionEnd = dnsForwarder.findQuestionEnd(query) ?: return null
-        val response = query.copyOfRange(0, questionEnd)
-        response[2] = ((query[2].toInt() and 0x01) or 0x80 or 0x10).toByte() // QR, preserve RD, RA
-        response[3] = 0x02.toByte() // SERVFAIL, no answers/authority/additional records
-        for (i in 6..11) response[i] = 0
-        return response
+        return forwardToUpstream(dnsPayload) ?: dnsForwarder.createServFailResponse(dnsPayload)
     }
 
     private fun extractDomainName(dnsPayload: ByteArray): String? {
@@ -575,27 +565,10 @@ class FirewallVpnService : VpnService() {
     }
 
     private fun createBlockedResponse(query: ByteArray): ByteArray {
-        // Create NXDOMAIN response
-        val questionEnd = dnsForwarder.findQuestionEnd(query) ?: return query.copyOf()
-        val response = query.copyOfRange(0, questionEnd)
-
-        // Set QR, preserve RD, set RA, return NXDOMAIN with no records.
-        response[2] = (((query[2].toInt() and 0x01) or 0x80 or 0x10)).toByte()
-        response[3] = 0x83.toByte()
-
-        // ANCOUNT = 0
-        response[6] = 0
-        response[7] = 0
-
-        // NSCOUNT = 0
-        response[8] = 0
-        response[9] = 0
-
-        // ARCOUNT = 0
-        response[10] = 0
-        response[11] = 0
-
-        return response
+        // Use the same tested DNS response builder as the upstream SERVFAIL path.
+        return dnsForwarder.createBlockedResponse(query)
+            ?: dnsForwarder.createServFailResponse(query)
+            ?: query.copyOf()
     }
 
     private fun forwardToUpstream(query: ByteArray): ByteArray? = dnsForwarder.forward(query)
