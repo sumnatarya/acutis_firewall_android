@@ -70,6 +70,36 @@ class ManifestAttributesTest {
         assertThat(alwaysOnValue).isEqualTo("false")
     }
 
+    @Test
+    fun `special use foreground service has an explanatory subtype`() {
+        val doc = DocumentBuilderFactory.newInstance()
+            .apply { isNamespaceAware = true }
+            .newDocumentBuilder()
+            .parse(manifest())
+
+        val services = doc.getElementsByTagName("service")
+        var subtype: String? = null
+        for (i in 0 until services.length) {
+            val service = services.item(i)
+            val name = service.attributes.getNamedItemNS(androidNs, "name")?.nodeValue
+            if (name != ".service.FirewallVpnService") continue
+
+            val children = service.childNodes
+            for (j in 0 until children.length) {
+                val child = children.item(j)
+                if (child.nodeName == "property" &&
+                    child.attributes.getNamedItemNS(androidNs, "name")?.nodeValue ==
+                    "android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                ) {
+                    subtype = child.attributes.getNamedItemNS(androidNs, "value")?.nodeValue
+                }
+            }
+        }
+
+        assertThat(subtype).isNotNull()
+        assertThat(subtype).contains("DNS")
+    }
+
     /**
      * Uninstall protection is silently load-bearing on these three attributes: drop
      * the permission and any app can spoof the admin broadcasts; drop the meta-data

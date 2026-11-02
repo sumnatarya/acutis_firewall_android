@@ -128,53 +128,10 @@ class BlocklistDownloader @Inject constructor(
         val domains = mutableSetOf<String>()
         fetcher.fetchLines(urlString) { lines ->
             lines.forEach { line ->
-                parseDomainFromLine(line)?.let { domain ->
-                    domains.add(domain)
-                }
+                domains.addAll(HostsFileParser.parseLine(line))
             }
         }
         return domains
-    }
-
-    private fun parseDomainFromLine(line: String): String? {
-        val trimmed = line.trim()
-
-        // Skip comments and empty lines
-        if (trimmed.isEmpty() || trimmed.startsWith("#") || trimmed.startsWith("!")) {
-            return null
-        }
-
-        // Handle hosts file format: "0.0.0.0 domain.com" or "127.0.0.1 domain.com"
-        if (trimmed.startsWith("0.0.0.0") || trimmed.startsWith("127.0.0.1")) {
-            val parts = trimmed.split(Regex("\\s+"))
-            if (parts.size >= 2) {
-                val domain = parts[1].lowercase().trim()
-                if (isValidDomain(domain)) {
-                    return domain
-                }
-            }
-            return null
-        }
-
-        // Handle plain domain format
-        val domain = trimmed.split(Regex("\\s+")).firstOrNull()?.lowercase()?.trim()
-        if (domain != null && isValidDomain(domain)) {
-            return domain
-        }
-
-        return null
-    }
-
-    private fun isValidDomain(domain: String): Boolean {
-        if (domain.isEmpty()) return false
-        if (domain == "localhost") return false
-        if (domain == "local") return false
-        if (domain.startsWith("0.0.0.0")) return false
-        if (domain.startsWith("127.")) return false
-        if (domain.startsWith("#")) return false
-        if (!domain.contains(".")) return false
-        // Basic domain validation
-        return domain.matches(Regex("^[a-z0-9][a-z0-9.-]*[a-z0-9]$"))
     }
 
     private fun getUrlsForCategory(category: BlockCategory): List<String> {
