@@ -481,25 +481,29 @@ class FirewallVpnService : VpnService() {
     private suspend fun processDnsQuery(dnsPayload: ByteArray): ByteArray? {
         if (dnsPayload.size < 12) return null
 
-        val domain = extractDomainName(dnsPayload)
-        Log.d(TAG, "DNS query for: $domain")
+        val domain = DnsQuestionNameParser.extractSingleQuestionName(dnsPayload)
+        if (domain == null) {
+            // A request that cannot be parsed cannot be safely checked. Do not
+            // forward it upstream without first applying the local policy.
+            Log.w(TAG, "Rejecting malformed or unsupported DNS question")
+            return dnsForwarder.createServFailResponse(dnsPayload)
+        }
 
-        if (domain != null) {
-            // First check static blocklist
+        Log.d(TAG, "DNS query for: $domain")
+        if (domain.isNotEmpty()) {
             if (shouldBlockDomain(domain)) {
                 Log.d(TAG, "BLOCKING (blocklist): $domain")
                 return createBlockedResponse(dnsPayload)
             }
 
-            // Then check time rules (this also updates usage tracking)
+            // This also updates usage tracking for time-based rules.
             if (timeRuleRepository.checkAndUpdateTimeRule(domain)) {
                 Log.d(TAG, "BLOCKING (time rule): $domain")
                 return createBlockedResponse(dnsPayload)
             }
         }
 
-        // Forward to upstream DNS
-        Log.d(TAG, "Forwarding: $domain")
+        Log.d(TAG, "Forwarding allowed DNS query: $domain")
         return forwardToUpstream(dnsPayload) ?: dnsForwarder.createServFailResponse(dnsPayload)
     }
 
