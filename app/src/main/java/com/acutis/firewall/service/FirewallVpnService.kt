@@ -143,12 +143,18 @@ class FirewallVpnService : VpnService() {
         if (isRunning || isStarting) return
         isStarting = true
 
+        try {
+            // Promote the service synchronously before scheduling network or database work.
+            startForeground(NOTIFICATION_ID, createNotification())
+        } catch (e: Exception) {
+            isStarting = false
+            Log.e(TAG, "Could not enter foreground service state", e)
+            stopSelf()
+            return
+        }
+
         serviceScope.launch {
             try {
-                // Enter foreground before DoH bootstrap or database access. Both may
-                // wait on a slow/captive network and must not delay the FGS notification.
-                startForeground(NOTIFICATION_ID, createNotification())
-
                 // Do not let a transient DNS/bootstrap failure leave a half-started VPN.
                 // The first DNS packet retries bootstrap after the VPN is established.
                 val bootstrapped = dnsForwarder.refreshBootstrap()
