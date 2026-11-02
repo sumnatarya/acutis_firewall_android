@@ -76,7 +76,7 @@ class FirewallVpnService : VpnService() {
     }
 
     // Try the active network's IPv4 DNS resolvers first, then a public fallback.
-    private var upstreamDnsServers: List<InetAddress> = listOf(FALLBACK_DNS)
+    @Volatile private var upstreamDnsServers: List<InetAddress> = listOf(FALLBACK_DNS)
 
     private fun getSystemDnsServers(): List<InetAddress> {
         val connectivityManager = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -376,12 +376,11 @@ class FirewallVpnService : VpnService() {
     }
 
     private fun forwardToUpstream(query: ByteArray): ByteArray? {
-        var socket: DatagramSocket? = null
-        return try {
-            var lastFailure: Exception? = null
+        var lastFailure: Exception? = null
 
-            for (dnsServer in upstreamDnsServers) {
-                socket = DatagramSocket()
+        for (dnsServer in upstreamDnsServers) {
+            try {
+                val socket = DatagramSocket()
                 try {
                     // A failed protect() would send this socket back through our own
                     // VPN and can create a DNS forwarding loop. Do not continue then.
@@ -410,27 +409,20 @@ class FirewallVpnService : VpnService() {
                     }
 
                     return responseBuffer.copyOf(responseDatagram.length)
-                } catch (e: Exception) {
-                    lastFailure = e
-                    Log.w(TAG, "DNS resolver $dnsServer failed; trying the next resolver", e)
                 } finally {
                     socket.close()
-                    socket = null
                 }
+            } catch (e: Exception) {
+                lastFailure = e
+                Log.w(TAG, "DNS resolver $dnsServer failed; trying the next resolver", e)
             }
-
-            if (lastFailure != null) {
-                Log.e(TAG, "All upstream DNS resolvers failed", lastFailure)
-            }
-            null
-        } catch (e: Exception) {
-            Log.e(TAG, "Error forwarding DNS", e)
-            null
-        } finally {
-            socket?.close()
         }
-    }
 
+        if (lastFailure != null) {
+            Log.e(TAG, "All upstream DNS resolvers failed", lastFailure)
+        }
+        return null
+    }
 
     private suspend fun writePacket(outputStream: FileOutputStream, packet: ByteArray) {
         withContext(Dispatchers.IO) {
