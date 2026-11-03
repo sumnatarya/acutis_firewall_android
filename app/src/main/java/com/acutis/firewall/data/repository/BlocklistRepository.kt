@@ -9,6 +9,7 @@ import com.acutis.firewall.data.db.entities.BlockedSite
 import com.acutis.firewall.service.FirewallVpnService
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -74,13 +75,23 @@ class BlocklistRepository @Inject constructor(
         return blockedSiteDao.isDomainBlocked(normalizeDomain(domain))
     }
 
+    // Seeds the built-in domains per category, only where a category has no rows yet.
+    // A downloaded list replaces them; a failed download leaves them as the safety net.
     suspend fun initializeDefaultBlocklists() {
-        val existingSites = blockedSiteDao.getEnabledSitesList()
-        if (existingSites.isEmpty()) {
-            val defaults = DefaultBlocklists.getAllDefaultDomains()
-            blockedSiteDao.insertAll(defaults)
-            notifyBlocklistChanged()
+        val defaults = mapOf(
+            BlockCategory.ADULT to DefaultBlocklists.getAdultContentDomains(),
+            BlockCategory.MALWARE to DefaultBlocklists.getMalwareDomains(),
+            BlockCategory.GAMBLING to DefaultBlocklists.getGamblingDomains(),
+            BlockCategory.SOCIAL_MEDIA to DefaultBlocklists.getSocialMediaDomains()
+        )
+        var seeded = false
+        for ((category, sites) in defaults) {
+            if (blockedSiteDao.getCountByCategory(category).first() == 0) {
+                blockedSiteDao.insertAll(sites)
+                seeded = true
+            }
         }
+        if (seeded) notifyBlocklistChanged()
     }
 
     suspend fun resetCategory(category: BlockCategory) {
