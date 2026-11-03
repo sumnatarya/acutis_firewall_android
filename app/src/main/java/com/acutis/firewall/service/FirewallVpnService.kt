@@ -15,6 +15,7 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.acutis.firewall.MainActivity
 import com.acutis.firewall.R
+import com.acutis.firewall.blocklist.KeywordBlocklist
 import com.acutis.firewall.data.db.BlockedSiteDao
 import com.acutis.firewall.data.preferences.SettingsDataStore
 import com.acutis.firewall.data.repository.TimeRuleRepository
@@ -261,8 +262,10 @@ class FirewallVpnService : VpnService() {
         Log.d(TAG, "DNS query for: $domain")
 
         if (domain != null) {
-            // First check static blocklist
-            if (shouldBlockDomain(domain)) {
+            // First check static blocklist, then the keyword/TLD rules (only while Adult is on)
+            if (shouldBlockDomain(domain) ||
+                (KeywordBlocklist.matches(domain) && settingsDataStore.adultBlockEnabled.first())
+            ) {
                 Log.d(TAG, "BLOCKING (blocklist): $domain")
                 return createBlockedResponse(dnsPayload)
             }
